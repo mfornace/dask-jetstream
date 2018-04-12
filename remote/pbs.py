@@ -1,4 +1,4 @@
-"""PBS submission"""
+'''PBS submission from a process on the cluster'''
 from . import lpickle
 from fn import env
 

@@ -1,3 +1,7 @@
+'''
+Remote submission of SSH jobs
+'''
+
 from remote import _REMOTE_ROOT
 from fn import env, _FN_ROOT
 

@@ -1,3 +1,7 @@
+"""
+Utilities for dealing with JetStream
+"""
+
 from neutronclient.v2_0.client import Client as Neutron_Client
 from novaclient.exceptions import BadRequest, Conflict, NotFound
 

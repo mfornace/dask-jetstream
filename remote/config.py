@@ -1,9 +1,14 @@
+'''
+Utilities for determining limits and capabilities
+'''
+
 from fn import split_evenly
 
 import os, getpass, platform, json
 
 ###############################################################################
 
+# Deduce GPUs
 try:
     import pyopencl
     _GPUS = {}
@@ -14,6 +19,9 @@ try:
 except ImportError:
     _GPUS = None
 
+###############################################################################
+
+# Deduce RAM
 try:
     import psutil, warnings
     with warnings.catch_warnings():
@@ -71,6 +79,7 @@ def current_platform():
     return default_platform_info() if PLATFORM is None else PLATFORM
 
 def split_platform(i, n):
+    '''Divide the resources in the platform into n chunks'''
     global PLATFORM
     p = current_platform()
     p['resources']['cpus'] = split_evenly(p['resources']['cpus'], n)[i]
@@ -85,8 +94,9 @@ def split_platform(i, n):
 def read_json(s):
     if not os.path.isfile(s):
         return {}
-    with open(s, 'r') as ifs:
-        return json.load(ifs)
+    try:
+        with open(s, 'r') as ifs:
+            return json.load(ifs)
 
 def default_platform_info(override=None):
     if override is None:

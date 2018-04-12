@@ -1,8 +1,8 @@
 try:
-    from cloudpickle import loads, dumps, load, dump as _dump
+    from cloudpickle import loads, dumps, load, dump
     implementation = 'cloudpickle'
 except ImportError:
-    from pickle import loads, dumps, load, dump as _dump
+    from pickle import loads, dumps, load, dump
     implementation = 'pickle'
 
 ################################################################################
@@ -24,32 +24,6 @@ class wrap:
         if isinstance(self.data, bytes):
             self.data = loads(self.data)
         return self.data[0](*self.data[1], *args, **self.data[2], **kwargs)
-
-################################################################################
-
-LINKS = None
-
-def register_link(link):
-    LINKS.append(link)
-
-class _Link_Context:
-    def __enter__(self):
-        global LINKS
-        LINKS, self.links = [], LINKS
-
-    def __exit__(self, cls, value, traceback):
-        global LINKS
-        LINKS, self.links = self.links, LINKS
-
-################################################################################
-
-@functools.wraps(_dump)
-def dump(obj, file, *args, **kwargs):
-    tracker = _Link_Context()
-    with tracker:
-        _dump(obj, file, *args, **kwargs)
-    file.flush()
-    return tracker.links
 
 ################################################################################
 

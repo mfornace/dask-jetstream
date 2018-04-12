@@ -1,3 +1,7 @@
+'''
+S3 wrapper
+'''
+
 from fn import env, colored
 
 import boto3, botocore

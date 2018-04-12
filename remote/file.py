@@ -6,6 +6,7 @@ import uuid, os, pathlib
 ################################################################################
 
 class Cloud_File:
+    '''Descriptor denoting a file on S3'''
     def __init__(self, name, database):
         self.tmp = None
         self.db_name = str(name)
@@ -45,7 +46,10 @@ class Cloud_File:
 
 ################################################################################
 
-class file_position:
+class Positioned_File:
+    '''
+    Temporarily positioned file object
+    '''
     def __init__(self, file, pos):
         self.file = file
         self.old = file.tell()
@@ -79,7 +83,7 @@ class Buffered_List(Cloud_File):
         lpickle.dump(value, self._file)
 
     def __getitem__(self, index):
-        with file_position(self._file, self.positions[index]) as f:
+        with Positioned_File(self._file, self.positions[index]) as f:
             return lpickle.load(f)
 
     def __getstate__(self):
@@ -99,7 +103,7 @@ class Buffered_List(Cloud_File):
         self.database.load_file(self.db_name, self.path)
 
     def items(self):
-        with file_position(self._file, 0) as f:
+        with Positioned_File(self._file, 0) as f:
             for i in self.positions:
                 f.seek(i)
                 yield lpickle.load(f)
