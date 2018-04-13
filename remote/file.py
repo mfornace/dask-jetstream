@@ -1,17 +1,26 @@
-from . import lpickle
+import s3fs
+from . import pickler
 from fn import env
 
 import uuid, os, pathlib
 
 ################################################################################
 
+# fs = s3fs.S3FileSystem()
+# fs.ls('my-bucket')
+# ['my-file.txt']
+# >>> with fs.open('my-bucket/my-file.txt', 'rb') as f:
+# ...     print(f.read())
+
+################################################################################
+
 class Cloud_File:
     '''Descriptor denoting a file on S3'''
-    def __init__(self, name, database):
+    def __init__(self, name, filesystem=None):
         self.tmp = None
         self.db_name = str(name)
         self._name = os.path.basename(name)
-        self.database = database
+        self.filesystem = filesystem
         self._downloaded = False
 
     @property
@@ -80,11 +89,11 @@ class Buffered_List(Cloud_File):
 
     def append(self, value):
         self.positions.append(self._file.tell())
-        lpickle.dump(value, self._file)
+        pickler.dump(value, self._file)
 
     def __getitem__(self, index):
         with Positioned_File(self._file, self.positions[index]) as f:
-            return lpickle.load(f)
+            return pickler.load(f)
 
     def __getstate__(self):
         if self._file is not None:
@@ -106,7 +115,7 @@ class Buffered_List(Cloud_File):
         with Positioned_File(self._file, 0) as f:
             for i in self.positions:
                 f.seek(i)
-                yield lpickle.load(f)
+                yield pickler.load(f)
 
     def __iter__(self):
         return iter(self.positions)

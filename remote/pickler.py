@@ -5,8 +5,6 @@ except ImportError:
     from pickle import loads, dumps, load, dump
     implementation = 'pickle'
 
-################################################################################
-
 import functools, zlib
 
 ################################################################################

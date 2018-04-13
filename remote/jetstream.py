@@ -4,29 +4,17 @@ Utilities for dealing with JetStream
 
 from neutronclient.v2_0.client import Client as Neutron_Client
 from novaclient.exceptions import BadRequest, Conflict, NotFound
+import tenacity as tn
 
 import os_client_config
-import time
-from functools import partial
 
-#password='6Y3-WkX-dU8-ELk',
-                             #       auth_url='https://tacc.jetstream-cloud.org:5000/v3',
-                                      # auth_url='https://tacc.jetstream-cloud.org:5000/v3',
-                                    #password='97u-qLc-2Yx-dEz',
-                                    #username='mfornace',
-                                    #project_name='TG-MCB170016',
-                                    #region_name='RegionOne')
 nova = os_client_config.make_client('compute')
-
 neutron = os_client_config.make_client('network')
-                                      # username='mfornace',
-                                      # password='97u-qLc-2Yx-dEz',
-                                      # project_name='TG-MCB170016',
-                                      # region_name='RegionOne')
 
 ################################################################################
 
 class OS:
+    '''An OpenStack wrapping base class'''
     def __init__(self, os, name=None):
         if name is not None:
             if type(os).__name__ != name:
@@ -83,7 +71,11 @@ class Image(OS):
 
 ################################################################################
 
+
 class Floating_IP(OS):
+    @classmethod
+    def list(cls): return list(map(Floating_IP, neutron.list_floatingips()['floatingips']))
+    
     def __init__(self, ip=None, net='public', server=None):
         if ip is None:
             body = {'floating_network_id': Network(net).id}
@@ -91,22 +83,13 @@ class Floating_IP(OS):
             ip = neutron.create_floatingip(dict(floatingip=body))['floatingip']
         elif isinstance(ip, str):
             ip = {i['floating_ip_address'] : i for i in neutron.list_floatingips()['floatingips']}[ip]
+        
         super().__init__(ip, 'dict')
+        
         if server is not None:
-            for attempt in range(320):
-                try:
-                    # openstack server add floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
-                    server.add_floating_ip(self.address)
-                    break
-                except BadRequest as e:
-                    time.sleep(5)
-                    print(self.address, e)
-                    exc = e
-            else:
-                raise exc
-
-    @classmethod
-    def list(cls): return list(map(Floating_IP, neutron.list_floatingips()['floatingips']))
+            # openstack server add floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
+            tn.retry(retry=tn.retry_if_exception_type(BadRequest), tn.stop_after_attempt(320),
+                  wait=tn.wait_fixed(5))(server.add_floating_ip)(self.address)
 
     def __str__(self):
         return 'Floating_IP(%s, %s)' % (self.address, self.status())
@@ -141,13 +124,15 @@ for k, v in dict(address='floating_ip_address', id='id').items():
 ################################################################################
 
 class Router(OS):
+    '''
+    openstack router unset --external-gateway ${OS_USERNAME}-api-router
+    openstack router remove subnet ${OS_USERNAME}-api-router ${OS_USERNAME}-api-subnet1
+    openstack router delete ${OS_USERNAME}-api-router
+    '''
     def __init__(self, router=None):
         if router is None:
             router = neutron.create_router(dict(router={}))['router']
         super().__init__(router)
-        # openstack router unset --external-gateway ${OS_USERNAME}-api-router
-        # openstack router remove subnet ${OS_USERNAME}-api-router ${OS_USERNAME}-api-subnet1
-        # openstack router delete ${OS_USERNAME}-api-router
 
 ################################################################################
 
@@ -167,14 +152,14 @@ class Instance(OS):
     _get = lambda nova: nova.servers
 
     def __init__(self, instance, image=None, flavor=None, key='mfornace-api-key', net=None):
-        """
+        '''
         openstack server create ${OS_USERNAME}-api-U-1 \
             --flavor m1.tiny \
             --image IMAGE-NAME \
             --key-name ${OS_USERNAME}-api-key \
             --security-group global-ssh \
             --nic net-id=${OS_USERNAME}-api-net
-        """
+        '''
         if image is not None:
             nics = [{'net-id': Network(net).id}]
             instance = nova.servers.create(name=instance, image=Image(image).os,
@@ -218,10 +203,10 @@ class Instance(OS):
     def delete(self):
         ips = {i['floating_ip_address'] : i for i in neutron.list_floatingips()['floatingips']}
         for n in self.os.networks.values():
+            # openstack server remove floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
             for ip in n:
                 if ip in ips:
                     Floating_IP(ips[ip]).delete()
-                # openstack server remove floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
         # openstack server delete ${OS_USERNAME}-api-U-1
         nova.servers.delete(self.os)
 
@@ -240,18 +225,23 @@ for i in 'suspend resume start stop'.split():
 
 ################################################################################
 
-def report():
-    #print(('\n' + '-'*35 + '\n').join('id:   %s\nname: %s' % (f.id, f.name) for f in Flavor.list()))
-    print('Instances')
-    for inst in Instance.list():
-        print(inst)
-    #print('Floating IPs')
-    #for ip in Floating_IP.list():
-    #    print(ip)
-    #for im in Image.list():
-    #    print(im)
+def report(instance=1, flavor=0, ip=0, image=0):
+    if flavor:
+        print('Flavors')
+        for f in Flavor.list())):
+            print('name=%s, id=%s' % (f.name, f.id))
+    if instance:
+        print('Instances')
+        for inst in Instance.list():
+            print(inst)
+    if ip:
+        print('Floating IPs')
+        for ip in Floating_IP.list():
+            print(ip)
+    if image:
+        for im in Image.list():
+            print(im)
     print()
-
 
 ################################################################################
 

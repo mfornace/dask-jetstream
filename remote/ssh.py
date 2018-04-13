@@ -1,11 +1,9 @@
 '''
 Remote submission of SSH jobs
 '''
-
-from remote import _REMOTE_ROOT
-from fn import env, _FN_ROOT
-
 import io, os, uuid, tarfile, json, subprocess, functools, time
+
+################################################################################
 
 try:
     import paramiko
@@ -23,6 +21,7 @@ try:
 except ImportError:
     def client(hostname, port=22, user=None, password=None, pkey=None, timeout=None): pass
 
+################################################################################
 
 def remote_submit(host, mode, settings, *, python, user=None, strict=True, **kwargs):
     assert mode in 'pbs local'.split()
@@ -37,10 +36,7 @@ def remote_submit(host, mode, settings, *, python, user=None, strict=True, **kwa
         with (path/'remote.json').open('w') as f:
             json.dump(settings, f, indent=4)
         with tarfile.open(str(path/gz), mode='w:gz') as tf:
-            add = lambda a, n: tf.add(str(n), arcname=a)
-            add('remote', _REMOTE_ROOT)
-            add('fn', _FN_ROOT)
-            add('aws', env.Path('~/.aws').expanduser())
+            add = lambda a, n tf.add(str(n), arcname=a)
             add('remote.json', path/'remote.json')
         ftp.put(str(env.Path(_REMOTE_ROOT)/'run_agent.py'), 'run_agent.py')
         ftp.put(str(path/gz), gz)
@@ -55,6 +51,7 @@ def remote_submit(host, mode, settings, *, python, user=None, strict=True, **kwa
         raise OSError('Bad exit code {} from host {}'.format(code, host))
     return True
 
+################################################################################
 
 def parse_qstat(output):
     import pandas
@@ -82,3 +79,5 @@ def remote_qstat(host, user=None, **kwargs):
 
 def local_qstat(args='-f'):
     return parse_qstat(subprocess.check_output(['qstat'] + args.split()).decode())
+
+################################################################################
