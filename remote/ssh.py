@@ -2,6 +2,7 @@
 Remote submission of SSH jobs
 '''
 import io, os, uuid, tarfile, json, subprocess, functools, time
+import remote
 
 ################################################################################
 
@@ -32,13 +33,13 @@ def remote_submit(host, mode, settings, *, python, user=None, strict=True, **kwa
         return False
     gz = 'source_{}.gz'.format(uuid.uuid4())
 
-    with env.temporary_path() as path, ssh.open_sftp() as ftp:
+    with fn.temporary_path() as path, ssh.open_sftp() as ftp:
         with (path/'remote.json').open('w') as f:
             json.dump(settings, f, indent=4)
         with tarfile.open(str(path/gz), mode='w:gz') as tf:
-            add = lambda a, n tf.add(str(n), arcname=a)
+            add = lambda a, n: tf.add(str(n), arcname=a)
             add('remote.json', path/'remote.json')
-        ftp.put(str(env.Path(_REMOTE_ROOT)/'run_agent.py'), 'run_agent.py')
+        ftp.put(str(fn.module_path(remote)/'run_agent.py'), 'run_agent.py')
         ftp.put(str(path/gz), gz)
 
     cmd = ' '.join(['source .bash_profile;', python, 'run_agent.py', mode, gz, '&& rm' if strict else '; rm', gz])

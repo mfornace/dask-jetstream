@@ -11,7 +11,7 @@ import functools, zlib
 
 class wrap:
     """
-    Simple class to circumvent e.g. multiprocessing using lpickle from standard
+    Simple class to circumvent e.g. multiprocessing using pickle from standard
     library. Reads a function and arguments into a bytestring, and unpacks them
     when __call__ is requested
     """
@@ -24,6 +24,8 @@ class wrap:
         return self.data[0](*self.data[1], *args, **self.data[2], **kwargs)
 
 ################################################################################
+
+# some simple functions to use zlib compression and decompression when pickling
 
 @functools.wraps(loads)
 def loadz(data, *args, **kwargs):

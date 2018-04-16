@@ -1,8 +1,5 @@
 '''PBS submission from a process on the cluster'''
-from . import lpickle
-from fn import env
-
-import sys, os, pathlib, datetime, tempfile, subprocess, shutil
+import fn, sys, os, pathlib, datetime, tempfile, subprocess, shutil
 
 ###############################################################################
 
@@ -67,7 +64,7 @@ class Line:
 
 def submission_script(script_inputs):
     kwargs = {k: Line(script_inputs.get(k), v) for (k, v) in _COMMANDS.items()}
-    return _SCRIPT.format(python=sys.executable, submit_time=env.unix_time(), **kwargs)
+    return _SCRIPT.format(python=sys.executable, submit_time=fn.unix_time(), **kwargs)
 
 ###############################################################################
 
@@ -92,14 +89,14 @@ def qsub(path, *, nodes, cpus, timeout, gpus=None, queue=None, account=None, mem
     """
     path: directory where to run, should exist
     """
-    path = env.Path(path)
+    path = fn.Path(path)
     (path/'remote.py').write_text(_RUN)
 
     job_name = datetime.datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
     script_inputs = {
         'name':     job_name,
         'output':   'out.o',
-        'timeout':  env.duration_string(timeout),
+        'timeout':  fn.duration_string(timeout),
         'nodes':    nodes,
         'cpus':     cpus,
         'gpus':     gpus,

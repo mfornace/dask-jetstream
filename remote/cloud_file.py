@@ -1,7 +1,5 @@
-import s3fs
+import fn, s3fs
 from . import pickler
-from fn import env
-
 import uuid, os, pathlib
 
 ################################################################################
@@ -26,7 +24,7 @@ class Cloud_File:
     @property
     def path(self):
         if self.tmp is None:
-            self.tmp = env.temporary_path()
+            self.tmp = fn.temporary_path()
             self.database.load_file(self.db_name, self.tmp.path/self._name)
         return self.tmp.path/self._name
 
@@ -59,11 +57,12 @@ class Positioned_File:
     '''
     Temporarily positioned file object
     '''
-    def __init__(self, file, pos):
+    def __init__(self, file, pos=None):
         self.file = file
         self.old = file.tell()
         file.flush()
-        file.seek(pos)
+        if pos is not None: 
+            file.seek(pos)
 
     def __enter__(self):
         return self.file
@@ -108,11 +107,11 @@ class Buffered_List(Cloud_File):
 
     def __setstate__(self, state):
         self.__dict__.update(state)
-        self.tmp = temporary_path()
+        self.tmp = fn.temporary_path()
         self.database.load_file(self.db_name, self.path)
 
     def items(self):
-        with Positioned_File(self._file, 0) as f:
+        with Positioned_File(self._file) as f:
             for i in self.positions:
                 f.seek(i)
                 yield pickler.load(f)
