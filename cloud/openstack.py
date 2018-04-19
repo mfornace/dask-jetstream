@@ -1,5 +1,5 @@
 """
-Utilities for dealing with JetStream
+Utilities for dealing with OpenStack
 """
 
 from neutronclient.v2_0.client import Client as Neutron_Client

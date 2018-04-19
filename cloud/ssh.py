@@ -33,7 +33,7 @@ def remote_submit(host, mode, settings, *, python, user=None, strict=True, **kwa
         return False
     gz = 'source_{}.gz'.format(uuid.uuid4())
 
-    with fn.temporary_path() as path, ssh.open_sftp() as ftp:
+    with fn.Temporary_Path() as path, ssh.open_sftp() as ftp:
         with (path/'remote.json').open('w') as f:
             json.dump(settings, f, indent=4)
         with tarfile.open(str(path/gz), mode='w:gz') as tf:
