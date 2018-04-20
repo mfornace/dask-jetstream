@@ -1,38 +1,48 @@
-logger = logging.getLogger(__name__)
+from distributed.deploy.ssh import SSHCluster
+from .openstack import Instance
+
+import uuid
+
+import fn
+
+info = fn.logs(__name__, 'info')
 
 ###################################################################
 
-class JetStreamCluster:
-    def __init__(self, workers, nthreads, nprocs, **kwargs):
-        self.scheduler = Instance()
-        s_addr = None
-        s_port = None
-        self.workers = [Instance() for w in workers]
-        w_addrs = []
-        self.ssh = SSHCluster(s_addr, s_port, w_addrs, nthreads, nprocs, **kwargs)
+class JetStreamCluster(SSHCluster):
+    def __init__(self, image, flavor, port=8786, nthreads=0, nprocs=1,
+                 ssh_user=None, ssh_port=22, ssh_key=None,
+                 nohost=False, logdir=None, python=None):
+        self.name = str(uuid.uuid4())
+        self.instances = [Instance(self.name, image=image, flavor=flavor)]
+        addr = self.instances[0].ip()
 
-    def start(self, **kwargs):
-        pass
-
+        # dask-scheduler --port 8000
+        super().__init__(addr, port, [], nthreads, nprocs, ssh_username=ssh_user, 
+            ssh_port=ssh_port, ssh_private_key=ssh_key,
+            nohost=nohost, logdir=logdir, remote_python=python)
+        
     def shutdown(self):
-        self.ssh.shutdown()
+        super().shutdown()
+        for i in self.instances: i.delete()
 
-    def start_scheduler(self):
-        instance = Instance(name, image=image, flavor=flavor)
-        ssh.remote_submit(address, 'local', settings, 
-            python='/usr/anaconda3/bin/python3', user='root'):
-
-    def start_worker(self):
-        instance = Instance(name, image=image, flavor=flavor)
-        ssh.remote_submit(address, 'local', settings, 
-            python='/usr/anaconda3/bin/python3', user='root'):
-        # wait for instance.status() to be active
-        # and wait for instance.ip()
+    def add_worker(self, image, flavor):
+        '''
+        wait for instance.status() to be active
+        and wait for instance.ip()
+        dask-worker {SCHEDULERIP}:8786 --nthreads 0 --nprocs 1 
+            --listen-address tcp://{WORKERETH}:8001 
+            --contact-address tcp://{WORKERIP}:8001
+        '''
+        name = '{}-{}'.format(self.name, len(self.instances))
+        inst = Instance(name, image=image, flavor=flavor)
+        self.instances.append(inst)
+        super().add_worker(inst.ip())
 
     def stop_worker(self, w):
         pass
 
-    @gen.coroutine
+    #@gen.coroutine
     def scale_up(self, n, **kwargs):
         """ Bring the total count of workers up to ``n``
         This can be implemented either as a function or as a Tornado coroutine.
@@ -45,7 +55,7 @@ class JetStreamCluster:
             # clean up any closed worker
             self.workers = [w for w in self.workers if w.status != 'closed']
 
-    @gen.coroutine
+    #@gen.coroutine
     def scale_down(self, workers):
         """ Remove ``workers`` from the cluster
 

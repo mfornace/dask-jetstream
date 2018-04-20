@@ -2,7 +2,6 @@
 Remote submission of SSH jobs
 '''
 import io, os, uuid, tarfile, json, subprocess, functools, time
-import remote
 
 ################################################################################
 

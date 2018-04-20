@@ -6,10 +6,13 @@ from neutronclient.v2_0.client import Client as Neutron_Client
 from novaclient.exceptions import BadRequest, Conflict, NotFound
 import tenacity as tn
 
+import fn
+
 import os_client_config
 
 nova = os_client_config.make_client('compute')
 neutron = os_client_config.make_client('network')
+info, handle = fn.logs(__name__, 'info', 'handle')
 
 ################################################################################
 
@@ -25,12 +28,12 @@ class OS:
         return getattr(self.os, name)
 
     @classmethod
-    def list(cls):
-        return list(map(cls, cls._get(nova).list()))
+    def _get(cls):
+        raise NotImplementedError('_get should be overwritten to return client resource')
 
     @classmethod
-    def all(cls):
-        return [cls(i) for i in cls.list()]
+    def list(cls):
+        return list(map(cls, cls._get(nova).list()))
 
     def __str__(self):
         return type(self).__name__ + '(' + self.os.name + ')'
@@ -71,10 +74,10 @@ class Image(OS):
 
 ################################################################################
 
-
-class Floating_IP(OS):
+class FloatingIP(OS):
     @classmethod
-    def list(cls): return list(map(Floating_IP, neutron.list_floatingips()['floatingips']))
+    def list(cls):
+        return list(map(FloatingIP, neutron.list_floatingips()['floatingips']))
     
     def __init__(self, ip=None, net='public', server=None):
         if ip is None:
@@ -87,23 +90,31 @@ class Floating_IP(OS):
         super().__init__(ip, 'dict')
         
         if server is not None:
+            self.add_to_server(server)
+
+    def add_to_server(self, server, n=320, t=5):
             # openstack server add floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
-            tn.retry(retry=tn.retry_if_exception_type(BadRequest), tn.stop_after_attempt(320),
-                  wait=tn.wait_fixed(5))(server.add_floating_ip)(self.address)
+        tn.retry(retry=tn.retry_if_exception_type(BadRequest), stop=tn.stop_after_attempt(n),
+              wait=tn.wait_fixed(t))(server.add_floating_ip)(self.address)
+
+    def __repr__(self):
+        return 'FloatingIP(%s)' % self.address
 
     def __str__(self):
-        return 'Floating_IP(%s, %s)' % (self.address, self.status())
-
-    def __repr__(self): return self.address
+        return self.address
 
     def status(self):
         self.os = neutron.find_resource_by_id('floatingip', self.id)
         return self.os['status'].lower()
 
-    def delete(self): neutron.delete_floatingip(self.id)
+    def delete(self): 
+        try:
+            neutron.delete_floatingip(self.id)
+        except BaseException as e:
+            return handle('Failed to delete FloatingIP')(e)
 
 for k, v in dict(address='floating_ip_address', id='id').items():
-    setattr(Floating_IP, k, property(lambda self, v=v: self.os[v]))
+    setattr(FloatingIP, k, property(lambda self, v=v: self.os[v]))
 
 ################################################################################
 
@@ -152,40 +163,39 @@ class Instance(OS):
     _get = lambda nova: nova.servers
 
     def __init__(self, instance, image=None, flavor=None, key='mfornace-api-key', net=None):
-        '''
-        openstack server create ${OS_USERNAME}-api-U-1 \
+        '''openstack server create ${OS_USERNAME}-api-U-1 \
             --flavor m1.tiny \
             --image IMAGE-NAME \
             --key-name ${OS_USERNAME}-api-key \
             --security-group global-ssh \
             --nic net-id=${OS_USERNAME}-api-net
         '''
-        if image is not None:
+        if image is None:
+            if isinstance(instance, str):
+                try:
+                    instance = nova.servers.find(id=instance)
+                except NotFound:
+                    instance = nova.servers.find(name=instance)
+            super().__init__(instance, 'Server')
+            self._ip = None
+        else:
             nics = [{'net-id': Network(net).id}]
-            instance = nova.servers.create(name=instance, image=Image(image).os,
+            os = nova.servers.create(name=instance, image=Image(image).os,
                 flavor=Flavor(flavor).os, key_name=key, nics=nics, security_groups=['mfornace-global-ssh'])
-            super().__init__(instance)
-            try:
-                ip = Floating_IP(net='public', server=self.os)
-                self.ips = {ip}
-            except BaseException as e:
-                try: self.delete()
-                except: pass
-                raise e
-            return
-        if isinstance(instance, str):
-            try:
-                instance = nova.servers.find(id=instance)
-            except NotFound:
-                instance = nova.servers.find(name=instance)
-        super().__init__(instance, 'Server')
+            super().__init__(os)
+            with handle('Failed to create IP'), self:
+                self._ip = FloatingIP(net='public', server=self.os)
 
-    # openstack server add security group  ${OS_USERNAME}-api-U-1 global-ssh
-    def add_security_group(self, group): raise NotImplemented
-    # openstack server remove remove security group ${OS_USERNAME}-api-U-1 global-ssh
-    def remove_security_group(self, group): raise NotImplemented
+    def add_security_group(self, group): 
+        '''openstack server add security group  ${OS_USERNAME}-api-U-1 global-ssh'''
+        raise NotImplementedError
+    
+    def remove_security_group(self, group): 
+        '''openstack server remove remove security group ${OS_USERNAME}-api-U-1 global-ssh'''
+        raise NotImplementedError
 
     def status(self):
+        '''Search for current status'''
         try:
             self.os = next(i for i in nova.servers.list() if i.id == self.id)
             return self.os.status.lower()
@@ -193,55 +203,54 @@ class Instance(OS):
             return 'dead'
 
     def ip(self):
-        ips = {i['floating_ip_address'] : i for i in neutron.list_floatingips()['floatingips']}
-        return Floating_IP(next(ips[i] for n in self.os.networks.values() for i in n if i in ips))
+        '''Search for ip if not cached'''
+        if self._ip is None:
+            ips = {i['floating_ip_address'] : i for i in neutron.list_floatingips()['floatingips']}
+            self._ip = FloatingIP(next(ips[i] for n in self.os.networks.values() for i in n if i in ips))
+        return self._ip
 
     def image(self, name, public=False, **metadata):
         metadata['visibility'] = 'public' if public else 'private'
         return Image(nova.images.find(id=self.os.create_image(name, metadata=metadata)))
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, cls, value, traceback):
+        self.delete()
+
     def delete(self):
+        '''never throws
+        openstack server remove floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
+        openstack server delete ${OS_USERNAME}-api-U-1
+        '''
         ips = {i['floating_ip_address'] : i for i in neutron.list_floatingips()['floatingips']}
-        for n in self.os.networks.values():
-            # openstack server remove floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
-            for ip in n:
-                if ip in ips:
-                    Floating_IP(ips[ip]).delete()
-        # openstack server delete ${OS_USERNAME}-api-U-1
-        nova.servers.delete(self.os)
+        [FloatingIP(ips[ip]).delete() for n in self.os.networks.values() for ip in n if ip in ips]
+        try:       
+            nova.servers.delete(self.os)
+        except BaseException as e:
+            return handle('Failed to delete Instance')(e)
 
-    def reboot(self):
-        self.os.reboot()
+    def info(self):
+        try: ip = self.ip()
+        except StopIteration: ip = 'error'
+        return "Instance('{}', {}, {})".format(self.name, self.status(), ip)
 
-    def __repr__(self):
-        try: ip = str(self.ip())
-        except StopIteration: ip = 'ERROR'
-        return 'Instance(\'%s\', %s, %s)' % (self.name, self.status(), ip)
+    def __str__(self):
+        return "Instance('{}', ip={})".format(self.name, self._ip)
 
-    def __str__(self): return self.__repr__()
 
-for i in 'suspend resume start stop'.split():
+for i in 'suspend resume start stop reboot'.split():
     setattr(Instance, i, lambda self, *, _cmd=i: getattr(nova.servers, _cmd)(self.os))
 
 ################################################################################
 
 def report(instance=1, flavor=0, ip=0, image=0):
-    if flavor:
-        print('Flavors')
-        for f in Flavor.list())):
-            print('name=%s, id=%s' % (f.name, f.id))
-    if instance:
-        print('Instances')
-        for inst in Instance.list():
-            print(inst)
-    if ip:
-        print('Floating IPs')
-        for ip in Floating_IP.list():
-            print(ip)
-    if image:
-        for im in Image.list():
-            print(im)
-    print()
+    f = lambda c, n: '%s: [%s]' % (n, ''.join('\n\t' + str(i) for i in c.list()))
+    C = [Instance, Flavor, FloatingIP, Image]
+    B = [instance, flavor, ip, image]
+    N = ['Instances', 'Flavors', 'IPs', 'Images']
+    return '\n'.join([f(c, n) for c, n, b in zip(C, N, B) if b])
 
 ################################################################################
 
