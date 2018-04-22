@@ -1,83 +1,104 @@
-'''
-Remote submission of SSH jobs
-'''
-import io, os, uuid, tarfile, json, subprocess, functools, time
+import itertools, functools
+import asyncio, asyncssh, sys, time
+from queue import Queue
+
+import fn
+
+info = fn.logs(__name__, 'info')
 
 ################################################################################
 
-try:
-    import paramiko
-    @functools.lru_cache(maxsize=2)
-    def client(hostname, port=22, user=None, password=None, pkey=None, timeout=None):
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.load_system_host_keys()
-        try:
-            ssh.connect(hostname, port=port, username=user, password=password, pkey=pkey, timeout=timeout)
-        except Exception as e:
-            print(e)
-            raise e
-        return ssh
-except ImportError:
-    def client(hostname, port=22, user=None, password=None, pkey=None, timeout=None): pass
+def python_exe(exe):
+    return exe or 'python{}'.format(sys.version_info.major)
 
 ################################################################################
 
-def remote_submit(host, mode, settings, *, python, user=None, strict=True, **kwargs):
-    assert mode in 'pbs local'.split()
-
-    try:
-        ssh = client(host, user=user, **kwargs)
-    except (paramiko.ssh_exception.NoValidConnectionsError, paramiko.ssh_exception.BadHostKeyException, OSError):
-        return False
-    gz = 'source_{}.gz'.format(uuid.uuid4())
-
-    with fn.Temporary_Path() as path, ssh.open_sftp() as ftp:
-        with (path/'remote.json').open('w') as f:
-            json.dump(settings, f, indent=4)
-        with tarfile.open(str(path/gz), mode='w:gz') as tf:
-            add = lambda a, n: tf.add(str(n), arcname=a)
-            add('remote.json', path/'remote.json')
-        ftp.put(str(fn.module_path(remote)/'run_agent.py'), 'run_agent.py')
-        ftp.put(str(path/gz), gz)
-
-    cmd = ' '.join(['source .bash_profile;', python, 'run_agent.py', mode, gz, '&& rm' if strict else '; rm', gz])
-
-    _, out, err = ssh.exec_command(cmd)
-    code = out.channel.recv_exit_status()
-
-    if code != 0:
-        print(''.join(out), '\n', ''.join(err))
-        raise OSError('Bad exit code {} from host {}'.format(code, host))
-    return True
-
-################################################################################
-
-def parse_qstat(output):
-    import pandas
-    jobs = output.split('\nJob Id:')
-    def process(lns):
-        ret = {'id': str(lns[0].strip())}
-        for ln in map(lambda ln: ln.split(' = '), lns[1:]):
+def retry(function, timeouts, exceptions=()):
+    @functools.wraps(function)
+    async def retry_function(*args, **kwargs):
+        x = StopIteration
+        for i, t in enumerate(timeouts):
+            info(t, 'Attempting retryable function', attempt=i, allowed=len(timeouts))
             try:
-                ret[ln[0].strip().lower()] = ln[1].strip()
-            except IndexError:
-                pass
-        return ret
-    return pandas.DataFrame(list(map(process, map(lambda j: j.split('\n'), jobs))))
+                return await asyncio.wait_for(function(*args, **kwargs), timeout=t)
+            except (asyncio.TimeoutError, TimeoutError) as e:
+                x = e
+            except exceptions as e:
+                info('Exception encountered while retrying function', exception=str(e))
+                x = e
+                await asyncio.sleep(t)
+        raise x
+    return retry_function
+
+################################################################################
+
+connect = retry(asyncssh.connect, [1,2,4,8] + 20 * [16], exceptions=(ConnectionRefusedError,))
+
+async def start_client(cmd, host, port=22, **kwargs):
+    '''Returns PID'''
+    cmd = "$SHELL -c 'echo $$; exec {} '".format(cmd)
+    info('Connecting to client', host=host, port=port, kwargs=str(kwargs))
+    info('Running command', cmd=cmd)
+    async with await connect(host, port, **kwargs) as conn: # not sure why I have to await here
+        info('Startin SSH command')
+        result = await conn.run(cmd, check=True)
+        info('Finished SSH command', result=str(result))
+        return int(result.stdout.split('\n')[0])
+
+async def stop_client(host, pid, signal='INT', port=22, **kwargs):
+    info('Killing client', host=host, port=port, signal=signal, pid=pid)
+    cmd = 'kill -{} {}'.format(signal, int(pid))
+    async with await connect(host, port, **kwargs) as conn:
+        result = await conn.run(cmd, check=False)
+        return result.exit_code
+
+################################################################################
+
+def start_scheduler(host, port, python=None, **kwargs):
+    cmd = '{} -m distributed.cli.dask_scheduler --port {} &'.format(python_exe(python), port)
+    return start_client(cmd, host, **kwargs)
 
 
-def remote_qstat(host, user=None, **kwargs):
-    ssh = client(host, user=user, **kwargs)
-    _, out, err = ssh.exec_command('qstat -f')
-    code = out.channel.recv_exit_status()
-    if code != 0:
-        print(''.join(out), '\n', ''.join(err))
-        raise OSError('Bad exit code {} from host {}'.format(code, host))
-    return parse_qstat(''.join(out))
+WORKER_CMD = """
+from distributed.cli.dask_worker import go
+from distributed.utils import get_ip_interface
+import sys
 
+ip = get_ip_interface({interface})
+sys.argv += ['--listen-address', 'tcp://{{ip}}:{port}'.format(ip, port)]
+print(sys.argv)
+go()
+"""
 
-def local_qstat(args='-f'):
-    return parse_qstat(subprocess.check_output(['qstat'] + args.split()).decode())
+def start_worker(host, port, saddr, sport, nthreads, nprocs, event, log=None, python=None, interface='eth0', **kwargs):
+    '''dask-worker {SCHEDULERIP}: 8786 --nthreads 0 --nprocs 1 --listen-address tcp://{WORKERETH}:8001 --contact-address tcp://{WORKERIP}:8001'''
+    cmd =  r'{} exec(\"{}\")'.format(python_exe(python), WORKER_CMD.format(port=port, interface=interface))
+    cmd = '{} {}:{} --nthreads {} --nprocs {}'
+    cmd = cmd.format(py, saddr, sport, nthreads, nprocs)
+    cmd = '{} --listen-address tcp://{}:{} --contact-address tcp://{}:{}'.format(cmd, eth, port, host, port)
+
+    output = lambda msg: print('[worker]: {}'.format(msg))
+    return start_client(cmd, host, output, event, **kwargs)
+
+################################################################################
+
+def test():
+    x = []
+    def event():
+        x.append(1)
+        return len(x) < 50
+    loop = asyncio.get_event_loop()
+
+    tasks = [loop.create_task(start_scheduler('127.0.0.1', 8000, event, username='Mark', password='bjorko91')) for i in range(1)]
+    tasks += [loop.create_task(start_worker('127.0.0.1', 8000, 'schedip', 'sport', 2, 1, event, username='Mark', password='bjorko91')) for i in range(1)]
+    asyncio.get_event_loop().run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+
+    for i, r in enumerate(t.result() for t in tasks):
+        if isinstance(r, Exception):
+            print('Task %d failed: %s' % (i, str(r)))
+        elif r != 0:
+            print('Task %d exited with status %s' % (i, r))
+        else:
+            print('Task %d succeeded' % i)
 
 ################################################################################
