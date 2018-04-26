@@ -4,8 +4,7 @@ Utilities for dealing with OpenStack
 from novaclient.exceptions import BadRequest, Conflict, NotFound
 from keystoneauth1.exceptions import RetriableConnectionFailure
 import os_client_config
-import tenacity as tn
-import json
+import json, time, itertools
 
 import fn
 from .future import async_exe
@@ -21,7 +20,7 @@ def check_version():
     novaclient.__version__ = getattr(novaclient, '__version__', '9.1.1')
     from novaclient.v2.servers import Server
     if not hasattr(Server, 'add_floating_ip'):
-        raise ImportError('Use novalient 9.1.1 or lower')
+        raise ImportError('Use novaclient 9.1.1 or lower')
 
 check_version()
 
@@ -39,7 +38,17 @@ def as_neutron(neutron=None):
 
 ################################################################################
 
-RETRY = tn.retry(retry=tn.retry_if_exception_type((BadRequest, ConnectionRefusedError, RetriableConnectionFailure)), stop=tn.stop_after_delay(60), wait=tn.wait_exponential(0.5, 10))
+def retry_openstack(function):
+    @fn.wraps(function)
+    def retryable(*args, **kwargs):
+        start = time.time()
+        for i in itertools.count():
+            try:
+                return function(*args, **kwargs)
+            except (BadRequest, ConnectionRefusedError, RetriableConnectionFailure) as e:
+                if time.time() > start + 120: raise e
+            time.sleep(2 ** (i-2))
+    return retryable
 
 ################################################################################
 
@@ -161,7 +170,7 @@ class FloatingIP(OS, ClosingContext):
 
     def close(self):
         try:
-            RETRY(self.neutron.delete_floatingip)(self.id)
+            retry_openstack(self.neutron.delete_floatingip)(self.id)
         except Exception as e:
             return error('Failed to close FloatingIP', exception=e)
 
@@ -209,7 +218,7 @@ class Instance(OS, ClosingContext):
         with error.context('Failed to create IP'):
             ip = await async_exe(pool, FloatingIP.create, 'public')
         with error.context('Failed to associate IP with server'):
-            await async_exe(pool, RETRY(out.add_ip), ip)
+            await async_exe(pool, retry_openstack(out.add_ip), ip)
         return out
 
     def add_ip(self, ip):
@@ -237,7 +246,7 @@ class Instance(OS, ClosingContext):
             raise BadRequest('IP not found')
 
     def ip(self, retry=True, neutron=None):
-        return RETRY(self.find_ip)(neutron) if retry else self.find_ip(neutron)
+        return retry_openstack(self.find_ip)(neutron) if retry else self.find_ip(neutron)
 
     def address(self, retry=True, neutron=None):
         return self.ip(retry=retry, neutron=neutron).address
@@ -254,7 +263,7 @@ class Instance(OS, ClosingContext):
         ips = {i['floating_ip_address'] : i for i in as_neutron(neutron).list_floatingips()['floatingips']}
         [FloatingIP(ips[ip]).close() for n in self.os.networks.values() for ip in n if ip in ips]
         try:
-            RETRY(self.nova.servers.delete)(self.os)
+            retry_openstack(self.nova.servers.delete)(self.os)
         except Exception as e:
             return error('Failed to close Instance', exception=e)
 
@@ -267,6 +276,16 @@ for _i in 'suspend resume start stop reboot'.split():
         '''Run command on instance'''
         getattr(self.nova.servers, _cmd)(self.os)
     setattr(Instance, _i, command)
+
+################################################################################
+
+class Volume(OS):
+    '''
+    nova.volumes.create_server_volume(server_id, volume_id, device=None, tag=None)
+    create_server_volume, get, update, delete
+    '''
+    def __init__(self):
+        pass
 
 ################################################################################
 

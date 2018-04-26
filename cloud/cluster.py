@@ -1,4 +1,4 @@
-from .openstack import Instance, ClosingContext, RETRY
+from .openstack import Instance, ClosingContext, retry_openstack
 from .future import AsyncThread, failed, result, block
 from . import ssh
 
@@ -55,7 +55,7 @@ class JetStreamCluster(ClosingContext):
 
     async def _address(self, instance):
         inst = await instance
-        return await self.runner.execute(RETRY(inst.address))
+        return await self.runner.execute(retry_openstack(inst.address))
 
     async def _close_worker(self, worker, signal='INT', sleep=None, **kwargs):
         sleep = (0.1, 0.25, 0.5, 1, 1, 1, 2, 5) if sleep is None else sleep
@@ -123,7 +123,7 @@ class JetStreamCluster(ClosingContext):
         for i in reversed(range(10)):
             try:
                 return distributed.Client(self, **kwargs)
-            except TimeoutError as e:
+            except (TimeoutError, ConnectionRefusedError) as e:
                 if i == 0: raise e
 
     # async def scale_up(self, n, **kwargs):

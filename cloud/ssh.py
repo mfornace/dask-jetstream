@@ -101,6 +101,7 @@ from distributed.cli.dask_scheduler import go
 import sys
 sys.argv[0] = 'ignore_this.py'
 sys.argv += ['--port', str({port})]
+# sys.argv += ['--local-directory', 'not done']
 go()
 """
 
