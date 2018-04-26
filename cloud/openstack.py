@@ -1,18 +1,18 @@
 """
 Utilities for dealing with OpenStack
 """
-
-from neutronclient.v2_0.client import Client as Neutron_Client
 from novaclient.exceptions import BadRequest, Conflict, NotFound
 from keystoneauth1.exceptions import RetriableConnectionFailure
 import os_client_config
 import tenacity as tn
-
-from .pool import async_exe
+import json
 
 import fn
+from .future import async_exe
 
-info, handle = fn.logs(__name__, 'info', 'handle')
+################################################################################
+
+info, error = fn.logs(__name__, 'info', 'error')
 
 ################################################################################
 
@@ -43,13 +43,14 @@ RETRY = tn.retry(retry=tn.retry_if_exception_type((BadRequest, ConnectionRefused
 
 ################################################################################
 
-def report(instance=1, flavor=0, ip=0, image=0):
+def report(instance=1, flavor=0, ip=0, image=0, as_dict=False):
     '''Return string describing all services'''
-    f = lambda c, n: '%s: [%s]' % (n, ''.join('\n\t' + str(i) for i in c.list()))
+    f = lambda c: list(map(str, c.list()))
     C = [Instance, Flavor, FloatingIP, Image]
     B = [instance, flavor, ip, image]
     N = ['Instances', 'Flavors', 'IPs', 'Images']
-    return '\n'.join([f(c, n) for c, n, b in zip(C, N, B) if b])
+    d = {n: f(c) for (n, c, b) in zip(N, C, B) if b}
+    return d if as_dict else json.dumps(d, indent=4)
 
 ################################################################################
 
@@ -96,11 +97,25 @@ class Flavor(OS):
 
 class Image(OS):
     lookup = {
+        'dask-agent': 'ubuntu-16-conda3-dask',
+        'ubuntu-16-conda3-dask': [
+            '27a174a7-046f-41a6-8952-2b86a28ff599', # fix autograd
+            'a66e5c39-14db-4284-adf2-282727237361',
+        ][0],
+        'ubuntu-16-anaconda3-dask': [
+            'c89afc1e-ea4a-48da-9d62-6834411fee4a', # has rosetta
+            'bab52ac7-1529-4558-9c38-45b4285ef275',
+            '02d98b3f-ab1f-48c7-b75d-25f853688d44', 
+        ][0],
+        'ubuntu-16-anaconda3-plus2': 'd6547a8c-2760-4861-aadc-974b9519f114',
         'nupack': 'd844d19a-defc-4430-af96-d74474f6f69a',
         'pna-agent': 'd1e1f474-edaf-449b-bee0-62f6c297a3b2', #  '4a61d296-aa4d-43f1-b822-d6d23d422af3', # '3ffaffe2-d07b-4bd8-831d-e82dff12e9fd', # 'ce178ebd-00bb-4a1b-9d2e-dc3217b0d3ba',
+        'ubuntu': 'ubuntu-16',
+        'ubuntu-16': '7505ea37-2fbb-499f-b150-c18fade5ce26',
         'ubuntu-14': 'JS-API-Featured-Ubuntu14-Feb-23-2017',
-        'ubuntu': '32bf80f9-7368-4b05-97b5-2e8fff0f6e80',
-        'centos': 'JS-API-Featured-Centos7-Dec-12-2017',
+        'ubuntu-old': '32bf80f9-7368-4b05-97b5-2e8fff0f6e80',
+        'centos': 'centos-7',
+        'centos-7': 'JS-API-Featured-Centos7-Dec-12-2017',
         'jupyter-tf': 'Python3_Jupyter_Tensorflow',
         'ubuntu-tf': 'Ubuntu 14.04 TensorFlow Py3.5'
     }
@@ -111,8 +126,9 @@ class Image(OS):
 
     def __init__(self, image='ubuntu', nova=None):
         if isinstance(image, str):
-            name = self.lookup.get(image, image)
-            image = as_nova(nova).glance.find_image(name)
+            while image in self.lookup:
+                image = self.lookup[image]
+            image = as_nova(nova).glance.find_image(image)
         assert image is not None
         super().__init__(image, 'Image')
 
@@ -147,7 +163,7 @@ class FloatingIP(OS, ClosingContext):
         try:
             RETRY(self.neutron.delete_floatingip)(self.id)
         except Exception as e:
-            return handle('Failed to close FloatingIP')(e)
+            return error('Failed to close FloatingIP', exception=e)
 
 for k, v in dict(address='floating_ip_address', id='id').items():
     setattr(FloatingIP, k, property(lambda self, v=v: self.os[v]))
@@ -176,7 +192,8 @@ class Instance(OS, ClosingContext):
         self._ip = None
 
     @classmethod
-    async def create(cls, name, image, flavor, *, pool=None, net=None, nova=None, key='mfornace-api-key', groups=['mfornace-global-ssh']):
+    async def create(cls, name, image, flavor, *, pool=None, net=None, nova=None, 
+        userdata=None, key='mfornace-api-key', groups=['mfornace-global-ssh']):
         '''openstack server create ${OS_USERNAME}-api-U-1 \
             --flavor m1.tiny \
             --image IMAGE-NAME \
@@ -185,12 +202,13 @@ class Instance(OS, ClosingContext):
             --nic net-id=${OS_USERNAME}-api-net
         '''
         nics = [{'net-id': Network(net).id}]
+        info('Creating OpenStack instance', image=str(image), flavor=str(flavor))
         os = await async_exe(pool, as_nova(nova).servers.create, name=name, image=Image(image).os,
-            flavor=Flavor(flavor).os, key_name=key, nics=nics, security_groups=groups)
+            flavor=Flavor(flavor).os, key_name=key, nics=nics, security_groups=groups, userdata=userdata)
         out = Instance(os)
-        with handle('Failed to create IP'):
+        with error.context('Failed to create IP'):
             ip = await async_exe(pool, FloatingIP.create, 'public')
-        with handle('Failed to associate IP with server'):
+        with error.context('Failed to associate IP with server'):
             await async_exe(pool, RETRY(out.add_ip), ip)
         return out
 
@@ -226,7 +244,7 @@ class Instance(OS, ClosingContext):
 
     def create_image(self, name, public=False, **metadata):
         metadata['visibility'] = 'public' if public else 'private'
-        return Image(self.nova.images.find(id=self.os.create_image(name, metadata=metadata)))
+        return self.os.create_image(name, metadata=metadata)
 
     def close(self, neutron=None):
         '''never throws
@@ -238,11 +256,11 @@ class Instance(OS, ClosingContext):
         try:
             RETRY(self.nova.servers.delete)(self.os)
         except Exception as e:
-            return handle('Failed to close Instance')(e)
+            return error('Failed to close Instance', exception=e)
 
     def __str__(self):
-        ip = ', ip={}' if self._ip else ''
-        return "Instance('{}', '{}'{})".format(self.name, self.id, ip)
+        ip = ', ip={}'.format(self._ip) if self._ip else ''
+        return "('{}'{})".format(self.name, ip)
 
 for _i in 'suspend resume start stop reboot'.split():
     def command(self, *, _cmd=_i):

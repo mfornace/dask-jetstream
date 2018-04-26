@@ -7,7 +7,7 @@ from paramiko.ssh_exception import SSHException, PasswordRequiredException
 
 TIMEOUTS = (PipeTimeout, socket.timeout)# (SSHException, PasswordRequiredException)
 
-handle = fn.logs(__name__, 'handle')
+error = fn.logs(__name__, 'error')
 
 ################################################################################
 
@@ -64,7 +64,7 @@ async def ssh_connect(ssh, cmd, label, check, put, address, user, port,
         retry(ssh.connect)(hostname=address, username=user, port=port, key_filename=key,
                 compress=compress, timeout=timeout, banner_timeout=banner_timeout, **kwargs)
     except tn.RetryError as e:
-        raise handle('SSH connection timed out')(e)
+        raise error('SSH connection timed out', exception=e)
 
     stdin, stdout, stderr = ssh.exec_command("$SHELL -i -c \'%s\'" % cmd, get_pty=True)
 

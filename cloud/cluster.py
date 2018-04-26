@@ -1,15 +1,14 @@
 from .openstack import Instance, ClosingContext, RETRY
-
+from .future import AsyncThread, failed, result, block
+from . import ssh
 
 import fn
 
-from .pool import AsyncThread
-from . import ssh
+import asyncio, uuid, distributed
 
-import asyncio, uuid, collections
-from concurrent.futures import ThreadPoolExecutor
+################################################################################
 
-info, handle = fn.logs(__name__, 'info', 'handle')
+info, error = fn.logs(__name__, 'info', 'error')
 
 ################################################################################
 
@@ -19,6 +18,15 @@ class Worker:
         self.port = port
         self.pid = pid
         self.close = None
+    
+    def __str__(self):
+        if failed(self.pid) or failed(self.instance): s = 'error'
+        elif not self.instance.done(): s = 'booting'
+        elif not self.pid.done(): s = 'connecting'
+        elif self.close is None: s = 'active'
+        elif self.close.done(): s = 'closed'
+        else: s = 'closing'
+        return '(status={}, port={}, pid={}, instance={})'.format(s, self.port, result(self.pid), result(self.instance))
 
 ################################################################################
 
@@ -28,12 +36,14 @@ class JetStreamCluster(ClosingContext):
         address = await self._address(future)
         return await ssh.start_scheduler(address, *args, **kwargs)
 
-    def __init__(self, name, image, flavor, port=8786, **kwargs):
+    def __init__(self, name, flavor, image, port=8786, python=None, preload='', startup=None, **kwargs):
         self.name = str(uuid.uuid4()) if name is None else name
+        self.exe_options = dict(python=python, preload=preload, startup=startup)
         self.ssh_options = kwargs
         self.runner = AsyncThread()
+        self.image = image
         sc = self.runner.put(Instance.create(self.name, image=image, flavor=flavor))
-        pid = self.runner.put(self._start_scheduler(sc, port, **kwargs))
+        pid = self.runner.put(self._start_scheduler(sc, port, **self.exe_options,  **kwargs))
         info('Started scheduler instance and process')
         self.workers = [Worker(sc, port, pid)]
 
@@ -47,40 +57,51 @@ class JetStreamCluster(ClosingContext):
         inst = await instance
         return await self.runner.execute(RETRY(inst.address))
 
-    async def _close_worker(self, worker, **kwargs):
+    async def _close_worker(self, worker, signal='INT', sleep=None, **kwargs):
+        sleep = (0.1, 0.25, 0.5, 1, 1, 1, 2, 5) if sleep is None else sleep
         options = self.ssh_options.copy()
         options.update(kwargs)
         address = await self._address(worker.instance)
         pid = await worker.pid
-        await ssh.stop_client(address, pid, signal='INT', **options)
+        await ssh.stop_client(address, pid, signal=signal, sleep=sleep, **options)
 
     def instances(self, *, workers=None):
         workers = self.workers if workers is None else workers
         out = []
         for w in workers:
-            try: out.append(w.instance.result())
-            except Exception as e: handle(e)
+            try: 
+                out.append(w.instance.result())
+            except Exception as e: 
+                out.append(None)
+                error('Failed to create instance', exception=e)
         return out
 
-    def close(self, *, workers=None):
+    @property
+    def scheduler_address(self):
+        [addr] = self.runner.wait([self._address(self.workers[0].instance)], timeout=None)[0]
+        return '%s:%d' % (addr.result(), self.workers[0].port)
+
+    def close(self, *, workers=None, timeouts=(60, 60)):
         workers = self.workers if workers is None else workers
         for w in workers:
-            w.close = w.close if w.close is None else self.runner.put(self._close_worker(w))
-        self.runner.wait([w.close for w in workers], timeout=60)    
-        self.runner.wait([w.instance for w in workers], timeout=60)
-        deleted = self.runner.pool.map(lambda i: i.delete(), self.instances(workers=workers))
-        return len(workers) - len(tuple(deleted))
+            w.close = self.runner.put(self._close_worker(w)) if w.close is None else w.close
+        self.runner.wait([w.close for w in workers], timeout=timeouts[0])    
+        self.runner.wait([w.instance for w in workers], timeout=timeouts[1])
+        inst = self.instances(workers=workers)
+        tuple(self.runner.pool.map(lambda i: None if i is None else i.close(), inst))
+        return tuple(w for (i, w) in zip(inst, workers) if i is None)
 
     def stop_worker(self, w):
         return self.close(workers=[w])[0]
 
-    async def _run_work(self, instance, port, **kwargs):
-        '''run_worker(host, port, saddr, sport, nthreads, nprocs, event, log=None, python=None, interface='eth0', **kwargs)'''
-        saddr = await self._address(self.workers[0].instance)
-        waddr = await self._address(instance)
-        return await ssh.run_worker(waddr, port, saddr, self.workers[0].port, 1, 1, **kwargs)
+    async def _start_worker(self, instance, port, **kwargs):
+        '''ok'''
+        addrs = await asyncio.gather(*map(self._address, (instance, self.workers[0].instance)))
+        options = self.ssh_options.copy()
+        options.update(kwargs)
+        return await ssh.start_worker(*zip(addrs, [port, self.workers[0].port]), **self.exe_options, **options)
 
-    def add_worker(self, image, flavor, port=8000, **kwargs):
+    def add_worker(self, flavor, image=None, port=8000, **kwargs):
         '''
         wait for instance.status() to be active
         and wait for instance.ip()
@@ -89,43 +110,55 @@ class JetStreamCluster(ClosingContext):
             --contact-address tcp://{WORKERIP}:8001
         '''
         name = '{}-{}'.format(self.name, len(self.workers))
+        image = self.image if image is None else image
         inst = self.runner.put(Instance.create(name, image=image, flavor=flavor))
-        pid = self.runner.put(self._run_work(inst, port, **kwargs))
+        pid = self.runner.put(self._start_worker(inst, port, **kwargs))
         self.workers.append(Worker(inst, port, pid))
+        return self.workers[-1]
 
-    #@gen.coroutine
-    def scale_up(self, n, **kwargs):
-        """ Bring the total count of tasks up to ``n``
-        This can be implemented either as a function or as a Tornado coroutine.
-        """
-        with log_errors():
-            kwargs2 = toolz.merge(self.worker_kwargs, kwargs)
-            yield [self._start_worker(**kwargs2) for i in range(n - len(self.scheduler.tasks))]
+    def client(self, **kwargs):
+        '''Wait for scheduler to be initialized and return Client(self)'''
+        block(self.workers[0].pid)
+        self.workers[0].pid.result() # check for error in startup
+        for i in reversed(range(10)):
+            try:
+                return distributed.Client(self, **kwargs)
+            except TimeoutError as e:
+                if i == 0: raise e
 
-            # clean up any closed worker
-            self.tasks = [w for w in self.tasks if w.status != 'closed']
+    # async def scale_up(self, n, **kwargs):
+    #     """ Bring the total count of tasks up to ``n``
+    #     This can be implemented either as a function or as a Tornado coroutine.
+    #     """
+    #     with error.context('Failed to scale_up workers'):
+    #         #kwargs2 = toolz.merge(self.worker_kwargs, kwargs)
+    #         self.add_worker()
+    #         #yield [self._start_worker(**kwargs2) for i in range(n - len(self.scheduler.tasks))]
 
-    #@gen.coroutine
-    def scale_down(self, tasks):
-        """ Remove ``workers`` from the cluster
+    #         # clean up any closed worker
+    #         #self.tasks = [w for w in self.tasks if w.status != 'closed']
 
-        Given a list of worker addresses this function should remove those
-        workers from the cluster.  This may require tracking which jobs are
-        associated to which worker address.
+    # async def scale_down(self, tasks):
+    #     """ Remove ``workers`` from the cluster
 
-        This can be implemented either as a function or as a Tornado coroutine.
-        """
-        with log_errors():
-            # clean up any closed worker
-            self.workers = [w for w in self.workers if w.status != 'closed']
-            workers = set(workers)
+    #     Given a list of worker addresses this function should remove those
+    #     workers from the cluster.  This may require tracking which jobs are
+    #     associated to which worker address.
 
-            # we might be given addresses
-            if all(isinstance(w, str) for w in workers):
-                workers = {w for w in self.workers if w.worker_address in workers}
+    #     This can be implemented either as a function or as a Tornado coroutine.
+    #     """
+    #     with error.context('Failed to scale_down workers'):
+    #         self.stop_worker()
+    #         # clean up any closed worker
+    #         #self.workers = [w for w in self.workers if w.status != 'closed']
+    #         #workers = set(workers)
 
-            # stop the provided workers
-            yield [self._stop_worker(w) for w in workers]
+    #         # we might be given addresses
+    #         #if all(isinstance(w, str) for w in workers):
+    #         #    workers = {w for w in self.workers if w.worker_address in workers}
+
+    #         # stop the provided workers
+    #         #yield [self._stop_worker(w) for w in workers]
 
 ################################################################################
 

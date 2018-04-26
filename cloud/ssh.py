@@ -1,15 +1,18 @@
-import itertools, functools
-import asyncio, asyncssh, sys, time
-from queue import Queue
+import asyncio, asyncssh, sys, functools, logging
+import boto3
 
 import fn
 
-info = fn.logs(__name__, 'info')
+[info, error] = fn.logs(__name__, 'info', 'error')
 
 ################################################################################
 
-def python_exe(exe):
-    return exe or 'python{}'.format(sys.version_info.major)
+def redirect_ssh_logs(file):
+    '''Switch SSH loggers to only write to a file'''
+    sh = logging.FileHandler(file)
+    for log in map(logging.getLogger, ('asyncssh', __name__)):
+        log.handlers = [sh]
+        log.propagate = False
 
 ################################################################################
 
@@ -18,67 +21,124 @@ def retry(function, timeouts, exceptions=()):
     async def retry_function(*args, **kwargs):
         x = StopIteration
         for i, t in enumerate(timeouts):
-            info(t, 'Attempting retryable function', attempt=i, allowed=len(timeouts))
             try:
                 return await asyncio.wait_for(function(*args, **kwargs), timeout=t)
             except (asyncio.TimeoutError, TimeoutError) as e:
-                x = e
+                x = info('Timed out while trying function', exception=e, attempt=i, allowed=len(timeouts))
             except exceptions as e:
-                info('Exception encountered while retrying function', exception=str(e))
-                x = e
+                x = info('Exception encountered while retrying function', exception=e, attempt=i)
                 await asyncio.sleep(t)
-        raise x
+        raise error('Failed to complete retryable function', exception=x)
     return retry_function
 
 ################################################################################
 
-connect = retry(asyncssh.connect, [1,2,4,8] + 20 * [16], exceptions=(ConnectionRefusedError,))
-
-async def start_client(cmd, host, port=22, **kwargs):
-    '''Returns PID'''
-    cmd = "$SHELL -c 'echo $$; exec {} '".format(cmd)
-    info('Connecting to client', host=host, port=port, kwargs=str(kwargs))
-    info('Running command', cmd=cmd)
-    async with await connect(host, port, **kwargs) as conn: # not sure why I have to await here
-        info('Startin SSH command')
-        result = await conn.run(cmd, check=True)
-        info('Finished SSH command', result=str(result))
-        return int(result.stdout.split('\n')[0])
-
-async def stop_client(host, pid, signal='INT', port=22, **kwargs):
-    info('Killing client', host=host, port=port, signal=signal, pid=pid)
-    cmd = 'kill -{} {}'.format(signal, int(pid))
-    async with await connect(host, port, **kwargs) as conn:
-        result = await conn.run(cmd, check=False)
-        return result.exit_code
+connect = retry(asyncssh.connect, [1,2,4,8] + 20 * [16],
+                exceptions=(ConnectionRefusedError, OSError))
 
 ################################################################################
 
-def start_scheduler(host, port, python=None, **kwargs):
-    cmd = '{} -m distributed.cli.dask_scheduler --port {} &'.format(python_exe(python), port)
-    return start_client(cmd, host, **kwargs)
+async def stop_client(host, pid, signal='INT', port=22, sleep=(), env={}, **kwargs):
+    '''Returns True if process was killed or False if process did not exist
+    Raises SystemError if process existed and could not be killed
+    '''
+    info('Killing remote SSH process', host=host, port=port, signal=signal, pid=pid)
+    cmd = 'kill -{} {}'.format(signal, int(pid))
+    async with await connect(host, port, **kwargs) as conn:
+        if (await conn.run(cmd, env=env, check=False)).exit_status: return False
+        for t in sleep:
+            if t: await asyncio.sleep(t)
+            if (await conn.run(cmd, env=env, check=False)).exit_status: return True
+        raise OSError('Process {} could not be killed'.format(pid))
 
+################################################################################
 
-WORKER_CMD = """
-from distributed.cli.dask_worker import go
-from distributed.utils import get_ip_interface
+async def start_client(cmd, host, ssh_port=22, env={}, startup=None, **kwargs):
+    '''Returns PID'''
+    #cmd = "$SHELL -c 'echo $$; exec {} '".format(cmd)
+    cmd = "sh -c 'nohup {} </dev/null >/dev/null 2>&1 & echo $!'".format(cmd.replace(r"'", r"'\''").replace(r'"', r"'\"'"))
+    info('Connecting to client', host=host, port=ssh_port, kwargs=str(kwargs))
+    info('Running command', cmd=cmd)
+    async with await connect(host, ssh_port, **kwargs) as conn: # not sure why I have to await here
+        info('Starting SSH command')
+        if startup is not None:
+            await startup(conn)
+        result = await conn.run(cmd, env=env, check=True)
+
+        info('Finished SSH command', result=str(result))
+        return int(result.stdout.split('\n')[0])
+
+################################################################################
+
+WATCHTOWER_SCRIPT = """
+import watchtower, logging, boto3, distributed
+session = boto3.Session(region_name='{region}', aws_access_key_id={access}, aws_secret_access_key={secret})
+ch = watchtower.CloudWatchLogHandler(log_group={group}, stream_name={stream}, send_interval={interval}, boto3_session=session)
+ch.setLevel(logging.INFO)
+logging.getLogger('distributed').handlers = [ch]
+"""
+
+def preload_watchtower(session, group, stream=None, interval=60):
+    '''Reset the distributed logger with one going to watchtower'''
+    session = boto3.Session() if session is None else session
+    cred = session.get_credentials()
+    if cred is None:
+        raise ValueError('No AWS credentials found')
+    return WATCHTOWER_SCRIPT.format(group=repr(group), stream=repr(stream), 
+        interval=interval, region=session.region_name,
+        access=repr(cred.access_key), secret=repr(cred.secret_key))
+
+################################################################################
+
+def python_exec(script, python=None):
+    python = python or 'python{}'.format(sys.version_info.major)
+    return '{} -c "exec(\'\'\'{}\'\'\')"'.format(python, repr(script)[1:-1])
+
+################################################################################
+
+SCHEDULE_SCRIPT = """
+from distributed.cli.dask_scheduler import go
 import sys
-
-ip = get_ip_interface({interface})
-sys.argv += ['--listen-address', 'tcp://{{ip}}:{port}'.format(ip, port)]
-print(sys.argv)
+sys.argv[0] = 'ignore_this.py'
+sys.argv += ['--port', str({port})]
 go()
 """
 
-def start_worker(host, port, saddr, sport, nthreads, nprocs, event, log=None, python=None, interface='eth0', **kwargs):
-    '''dask-worker {SCHEDULERIP}: 8786 --nthreads 0 --nprocs 1 --listen-address tcp://{WORKERETH}:8001 --contact-address tcp://{WORKERIP}:8001'''
-    cmd =  r'{} exec(\"{}\")'.format(python_exe(python), WORKER_CMD.format(port=port, interface=interface))
-    cmd = '{} {}:{} --nthreads {} --nprocs {}'
-    cmd = cmd.format(py, saddr, sport, nthreads, nprocs)
-    cmd = '{} --listen-address tcp://{}:{} --contact-address tcp://{}:{}'.format(cmd, eth, port, host, port)
+def start_scheduler(host, port, python=None, preload='', **kwargs):
+    script = preload + SCHEDULE_SCRIPT.format(port=port)
+    return start_client(python_exec(script, python), host, **kwargs)
 
-    output = lambda msg: print('[worker]: {}'.format(msg))
-    return start_client(cmd, host, output, event, **kwargs)
+################################################################################
+
+# A wrapper around dask-worker to provide some more flexibility
+WORK_SCRIPT = """
+from distributed.cli.dask_worker import go
+from distributed.utils import get_ip_interface
+import os, sys, psutil
+allowed = tuple(psutil.net_if_addrs().keys())
+print(allowed)
+print({interfaces})
+ip = next(get_ip_interface(i) for i in {interfaces} if i in allowed)
+print(ip)
+sys.argv[0] = 'ignore_this.py'
+sys.argv += ['%s:%d' % ('{shost}', {sport})]
+sys.argv += ['--listen-address', 'tcp://%s:%d' % (ip, {port})]
+sys.argv += ['--contact-address', 'tcp://%s:%d' % ('{host}', {port})]
+sys.argv += ['--nprocs', '1']
+sys.argv += ['--nthreads', str(os.cpu_count())]
+go()
+"""
+
+def start_worker(address, scheduler, *, preload='', python=None, interfaces=['eth0', 'en0', 'ens3'], **kwargs):
+    '''
+    address and scheduler are pairs of (IP, port)
+    dask-worker {SCHEDULERIP}:8786 --nthreads 0 --nprocs 1 --listen-address tcp://{WORKERETH}:8001 --contact-address tcp://{WORKERIP}:8001
+    interfaces is a list of possible IP interfaces that should be tried in order
+    '''
+    host, port = address
+    shost, sport = scheduler
+    script = preload + WORK_SCRIPT.format(interfaces=repr(interfaces), port=port, host=host, shost=shost, sport=sport)
+    return start_client(python_exec(script, python), host, **kwargs)
 
 ################################################################################
 

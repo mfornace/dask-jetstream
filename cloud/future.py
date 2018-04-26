@@ -1,7 +1,30 @@
-import fn
 import asyncio, time, threading
-from threading import Thread
 from concurrent.futures import Future, ThreadPoolExecutor
+
+import fn
+
+################################################################################
+
+def failed(future):
+    return future.done() and future.exception() is not None
+
+def result(future):
+    if future.done() and future.exception() is None:
+        return future.result()
+
+################################################################################
+
+def block(future, timeout=None, resolution=0.2, throw=True):
+    '''Block on a future until it is done'''
+    end = None if timeout is None else time.time() + timeout
+    while not future.done():
+        time.sleep(resolution)
+        if end is not None and end < time.time():
+            return None
+    try:
+        return future.result()
+    except Exception as e:
+        if throw: raise e
 
 ################################################################################
 
@@ -32,20 +55,9 @@ class AsyncThread:
         self.loop.call_soon_threadsafe(p)
         return future.result()
 
-    def get(self, future, timeout=None, resolution=0.2, throw=True):
-        end = None if timeout is None else time.time() + timeout
-        while not future.done():
-            time.sleep(resolution)
-            if end is not None and end < time.time():
-                return None
-        try:
-            return future.result()
-        except Exception as e:
-            if throw: raise e
-
     def wait(self, futures, timeout):
         fut = self.put(asyncio.wait(list(futures), timeout=timeout))
-        return self.get(fut, timeout=timeout, throw=False)
+        return block(fut, timeout=timeout, throw=False)
 
     def cancel(self, task):
         self.loop.call_soon_threadsafe(task.cancel)
