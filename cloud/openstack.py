@@ -5,6 +5,7 @@ from novaclient.exceptions import BadRequest, Conflict, NotFound
 from keystoneauth1.exceptions import RetriableConnectionFailure
 import os_client_config
 import json, time, itertools
+from concurrent.futures import ThreadPoolExecutor
 
 import fn
 from .future import async_exe
@@ -12,6 +13,28 @@ from .future import async_exe
 ################################################################################
 
 info, error = fn.logs(__name__, 'info', 'error')
+
+################################################################################
+
+FLAVORS, VOLUMES, NETWORKS, IMAGES = set(), {}, {}, {}
+
+def set_config(dict_like):
+    VOLUMES.update(dict_like['volumes'])
+    NETWORKS.update(dict_like['networks'])
+    FLAVORS.update(dict_like['flavors'])
+    IMAGES.update(dict_like['images'])
+
+def lookup(where, key):
+    while key in where:
+        key = where[key]
+        key = key if isinstance(key, str) else key[0]
+    return key
+
+def close_openstack(pool=None, graceful=True):
+    work = Instance.list() + FloatingIP.list()
+    if pool is None:
+        pool = ThreadPoolExecutor(len(work))
+    return tuple(pool.map(lambda i: i.close(graceful=graceful), work))
 
 ################################################################################
 
@@ -45,7 +68,7 @@ def retry_openstack(function):
         for i in itertools.count():
             try:
                 return function(*args, **kwargs)
-            except (BadRequest, ConnectionRefusedError, RetriableConnectionFailure) as e:
+            except (BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict) as e:
                 if time.time() > start + 120: raise e
             time.sleep(2 ** (i-2))
     return retryable
@@ -93,50 +116,22 @@ class Flavor(OS):
     def list(cls, nova=None):
         return list(map(cls, as_nova(nova).flavors.list()))
 
-    lookup = {'m1.tiny', 's1.large', 's1.xlarge', 's1.xxlarge', 'm1.small',
-              'm1.medium', 'm1.large', 'm1.xlarge', 'm1.xxlarge'}
-
     def __init__(self, flavor, nova=None):
         if isinstance(flavor, str):
-            assert flavor in self.lookup
+            assert flavor in FLAVORS
             flavor = as_nova(nova).flavors.find(name=flavor)
         super().__init__(flavor, 'Flavor')
 
 ################################################################################
 
 class Image(OS):
-    lookup = {
-        'dask-agent': 'ubuntu-16-conda3-dask',
-        'ubuntu-16-conda3-dask': [
-            '27a174a7-046f-41a6-8952-2b86a28ff599', # fix autograd
-            'a66e5c39-14db-4284-adf2-282727237361',
-        ][0],
-        'ubuntu-16-anaconda3-dask': [
-            'c89afc1e-ea4a-48da-9d62-6834411fee4a', # has rosetta
-            'bab52ac7-1529-4558-9c38-45b4285ef275',
-            '02d98b3f-ab1f-48c7-b75d-25f853688d44', 
-        ][0],
-        'ubuntu-16-anaconda3-plus2': 'd6547a8c-2760-4861-aadc-974b9519f114',
-        'nupack': 'd844d19a-defc-4430-af96-d74474f6f69a',
-        'pna-agent': 'd1e1f474-edaf-449b-bee0-62f6c297a3b2', #  '4a61d296-aa4d-43f1-b822-d6d23d422af3', # '3ffaffe2-d07b-4bd8-831d-e82dff12e9fd', # 'ce178ebd-00bb-4a1b-9d2e-dc3217b0d3ba',
-        'ubuntu': 'ubuntu-16',
-        'ubuntu-16': '7505ea37-2fbb-499f-b150-c18fade5ce26',
-        'ubuntu-14': 'JS-API-Featured-Ubuntu14-Feb-23-2017',
-        'ubuntu-old': '32bf80f9-7368-4b05-97b5-2e8fff0f6e80',
-        'centos': 'centos-7',
-        'centos-7': 'JS-API-Featured-Centos7-Dec-12-2017',
-        'jupyter-tf': 'Python3_Jupyter_Tensorflow',
-        'ubuntu-tf': 'Ubuntu 14.04 TensorFlow Py3.5'
-    }
-
     @classmethod
     def list(cls, nova=None):
         return list(map(cls, as_nova(nova).glance.list()))
 
     def __init__(self, image='ubuntu', nova=None):
         if isinstance(image, str):
-            while image in self.lookup:
-                image = self.lookup[image]
+            image = lookup(IMAGES, image)
             image = as_nova(nova).glance.find_image(image)
         assert image is not None
         super().__init__(image, 'Image')
@@ -168,7 +163,7 @@ class FloatingIP(OS, ClosingContext):
         self.os = self.neutron.find_resource_by_id('floatingip', self.id)
         return self.os['status'].lower()
 
-    def close(self):
+    def close(self, graceful=True):
         try:
             retry_openstack(self.neutron.delete_floatingip)(self.id)
         except Exception as e:
@@ -199,6 +194,7 @@ class Instance(OS, ClosingContext):
                 instance = self.nova.servers.find(name=instance)
         super().__init__(instance, 'Server')
         self._ip = None
+        self.volumes = []
 
     @classmethod
     async def create(cls, name, image, flavor, *, pool=None, net=None, nova=None, 
@@ -220,6 +216,21 @@ class Instance(OS, ClosingContext):
         with error.context('Failed to associate IP with server'):
             await async_exe(pool, retry_openstack(out.add_ip), ip)
         return out
+
+    def attach_volume(self, volume, device=None):
+        '''Attach a volume that already exists'''
+        volume = lookup(VOLUMES, volume)
+        self.nova.volumes.create_server_volume(self.id, volume, device=device)
+        self.volumes.append(volume)
+        return volume
+
+    def detach_volume(self, volume):
+        '''Detach a volume by index or ID'''
+        volume = lookup(VOLUMES, volume)
+        volume = volume if isinstance(volume, str) else self.volumes[volume]
+        self.nova.volume.delete_server_volume(self.id, volume)
+        self.volumes.remove(volume)
+        return volume
 
     def add_ip(self, ip):
         '''openstack server add floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here'''
@@ -255,11 +266,19 @@ class Instance(OS, ClosingContext):
         metadata['visibility'] = 'public' if public else 'private'
         return self.os.create_image(name, metadata=metadata)
 
-    def close(self, neutron=None):
-        '''never throws
+    def close(self, graceful=True, neutron=None):
+        '''should never throw unless interrupted
+        tries to shut down instance first
         openstack server remove floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here
         openstack server delete ${OS_USERNAME}-api-U-1
         '''
+        try:
+            self.stop()
+            for i in range(30):
+                if not graceful or self.status() != 'active': break
+                time.sleep(1)
+        except Exception: # for instance, Conflict if already stopped
+            pass
         ips = {i['floating_ip_address'] : i for i in as_neutron(neutron).list_floatingips()['floatingips']}
         [FloatingIP(ips[ip]).close() for n in self.os.networks.values() for ip in n if ip in ips]
         try:
@@ -271,21 +290,14 @@ class Instance(OS, ClosingContext):
         ip = ', ip={}'.format(self._ip) if self._ip else ''
         return "('{}'{})".format(self.name, ip)
 
+    def __repr__(self):
+        return 'Instance' + str(self)
+
 for _i in 'suspend resume start stop reboot'.split():
     def command(self, *, _cmd=_i):
         '''Run command on instance'''
         getattr(self.nova.servers, _cmd)(self.os)
     setattr(Instance, _i, command)
-
-################################################################################
-
-class Volume(OS):
-    '''
-    nova.volumes.create_server_volume(server_id, volume_id, device=None, tag=None)
-    create_server_volume, get, update, delete
-    '''
-    def __init__(self):
-        pass
 
 ################################################################################
 
@@ -306,29 +318,14 @@ class Network(OS):
     def list(cls, nova=None):
         return list(map(cls, as_nova(nova).neutron.list()))
 
-    lookup = {None: 'mfornace-api-net', 'public': 'public'}
-
     def __init__(self, net=None, nova=None):
         if net is None or isinstance(net, str):
-            net = as_nova(nova).neutron.find_network(self.lookup.get(net, net))
+            net = as_nova(nova).neutron.find_network(NETWORKS.get(net, net))
         super().__init__(net)
 
     @classmethod
     def create(cls, net, nova=None):
-        return cls(as_nova(nova).neutron.find_network(cls.lookup.get(net, net)))
+        return cls(as_nova(nova).neutron.find_network(NETWORKS.get(net, net)))
 
 ################################################################################
 
-# class Security_Group(OS):
-#     lookup = {i['name'] for i in neutron.list_security_groups()['security_groups']}
-#
-#     def __init__(self, group):
-#         if group not in lookup:
-#             group = neutron.create_security_group(dict(name=group, protocol='icmp'))
-#         super().__init__(group)
-#
-#     @classmethod
-#     def list(cls):
-#         return list(map(Security_Group, neutron.list_security_groups()['security_groups']))
-#
-#     def close(self):

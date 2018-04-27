@@ -32,18 +32,21 @@ class Worker:
 
 class JetStreamCluster(ClosingContext):
 
-    async def _start_scheduler(self, future, *args, **kwargs):
+    async def _start_scheduler(self, future, port, volume, **kwargs):
         address = await self._address(future)
-        return await ssh.start_scheduler(address, *args, **kwargs)
+        if volume is not None:
+            inst = await future
+            volume = await self.runner.execute(retry_openstack(inst.attach_volume), volume)
+        return await ssh.start_scheduler(address, port, volume, **kwargs)
 
-    def __init__(self, name, flavor, image, port=8786, python=None, preload='', startup=None, **kwargs):
+    def __init__(self, name, flavor, image, port=8786, *, python=None, volume=None, preload='', ssh={}):
         self.name = str(uuid.uuid4()) if name is None else name
-        self.exe_options = dict(python=python, preload=preload, startup=startup)
-        self.ssh_options = kwargs
+        self.exe_options = dict(python=python, preload=preload)
+        self.ssh_options = ssh
         self.runner = AsyncThread()
         self.image = image
         sc = self.runner.put(Instance.create(self.name, image=image, flavor=flavor))
-        pid = self.runner.put(self._start_scheduler(sc, port, **self.exe_options,  **kwargs))
+        pid = self.runner.put(self._start_scheduler(sc, port, volume, **self.exe_options,  **ssh))
         info('Started scheduler instance and process')
         self.workers = [Worker(sc, port, pid)]
 
@@ -51,7 +54,7 @@ class JetStreamCluster(ClosingContext):
         return 'JetStreamCluster({})'.format(repr(self.name))
     
     def scheduler(self):
-        return self.workers[0].instance.result()
+        return block(self.workers[0].instance)
 
     async def _address(self, instance):
         inst = await instance
@@ -116,14 +119,14 @@ class JetStreamCluster(ClosingContext):
         self.workers.append(Worker(inst, port, pid))
         return self.workers[-1]
 
-    def client(self, **kwargs):
+    def client(self, attempts=10, **kwargs):
         '''Wait for scheduler to be initialized and return Client(self)'''
         block(self.workers[0].pid)
         self.workers[0].pid.result() # check for error in startup
-        for i in reversed(range(10)):
+        for i in reversed(range(attempts)):
             try:
                 return distributed.Client(self, **kwargs)
-            except (TimeoutError, ConnectionRefusedError) as e:
+            except (TimeoutError, ConnectionRefusedError, OSError) as e:
                 if i == 0: raise e
 
     # async def scale_up(self, n, **kwargs):

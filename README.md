@@ -136,3 +136,28 @@ image_id = i.create_image('ubuntu-16-conda3-dask', public=False, skip_atmosphere
 i.resume()
 i.close()
 ```
+
+
+## Volume
+```bash
+openstack volume type list
+# 2559f0ae-7116-46b6-9ccd-5feecdadd3d5 | default | True      |
+openstack limits show
+openstack volume create --size 256 --type default --image 27a174a7-046f-41a6-8952-2b86a28ff599 ubuntu-16-conda3-dask-scheduler
+```
+After attaching the volume should live in /dev/disk/by-id/{something}
+My device ID was scsi-0QEMU_QEMU_HARDDISK_b2414c9c-ff4a-4a7c-a.
+```bash
+ls /dev/disk/by-id/${DEVICE_ID} # 1 time
+sudo mkfs.ext4 /dev/disk/by-id/${DEVICE_ID} # 1 time
+sudo mkdir -p /mnt/volume 
+sudo mount /dev/disk/by-id/${DEVICE_ID} /mnt/volume
+sudo umount /mnt/volume
+```
+Then detach the volume.
+'ls /dev/disk/by-id/*%s*' % volume_id[:20]
+
+## Seeing limits/resource restrictions
+```bash
+openstack limits show --absolute
+```

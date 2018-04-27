@@ -45,15 +45,17 @@ async def stop_client(host, pid, signal='INT', port=22, sleep=(), env={}, **kwar
     info('Killing remote SSH process', host=host, port=port, signal=signal, pid=pid)
     cmd = 'kill -{} {}'.format(signal, int(pid))
     async with await connect(host, port, **kwargs) as conn:
-        if (await conn.run(cmd, env=env, check=False)).exit_status: return False
+        if (await conn.run(cmd, env=env, check=False)).exit_status: 
+            return False
         for t in sleep:
-            if t: await asyncio.sleep(t)
-            if (await conn.run(cmd, env=env, check=False)).exit_status: return True
+            await asyncio.sleep(t)
+            if (await conn.run(cmd, env=env, check=False)).exit_status: 
+                return True
         raise OSError('Process {} could not be killed'.format(pid))
 
 ################################################################################
 
-async def start_client(cmd, host, ssh_port=22, env={}, startup=None, **kwargs):
+async def start_client(cmd, host, ssh_port=22, env={}, visit=None, **kwargs):
     '''Returns PID'''
     #cmd = "$SHELL -c 'echo $$; exec {} '".format(cmd)
     cmd = "sh -c 'nohup {} </dev/null >/dev/null 2>&1 & echo $!'".format(cmd.replace(r"'", r"'\''").replace(r'"', r"'\"'"))
@@ -61,8 +63,8 @@ async def start_client(cmd, host, ssh_port=22, env={}, startup=None, **kwargs):
     info('Running command', cmd=cmd)
     async with await connect(host, ssh_port, **kwargs) as conn: # not sure why I have to await here
         info('Starting SSH command')
-        if startup is not None:
-            await startup(conn)
+        if visit is not None:
+            await visit(conn)
         result = await conn.run(cmd, env=env, check=True)
 
         info('Finished SSH command', result=str(result))
@@ -96,18 +98,41 @@ def python_exec(script, python=None):
 
 ################################################################################
 
+async def mount_volume(conn, volume_id, mount='/mnt/volume', user='$USER'):
+    '''Mount a volume on a running instance via SSH'''
+    # You can google this, but it seems to be the only way of identifying the disk:
+    cmd = 'ls /dev/disk/by-id/*%s*' % volume_id[:20]
+    out = await conn.run(cmd, check=True)
+    dev = out.stdout.strip()
+    cmd = ' && '.join((
+        'sudo mkdir -p {v}',
+        'sudo mount {d} {v}',
+        'sudo chown -R {u} {v}',
+        'sudo chmod -R g+rw {v}'
+    )).format(d=dev, v=mount, u=user)
+    await conn.run(cmd, check=True)
+    return dev
+
+################################################################################
+
 SCHEDULE_SCRIPT = """
 from distributed.cli.dask_scheduler import go
 import sys
 sys.argv[0] = 'ignore_this.py'
 sys.argv += ['--port', str({port})]
-# sys.argv += ['--local-directory', 'not done']
+if '{path}': sys.argv += ['--local-directory', '{path}']
 go()
 """
 
-def start_scheduler(host, port, python=None, preload='', **kwargs):
-    script = preload + SCHEDULE_SCRIPT.format(port=port)
-    return start_client(python_exec(script, python), host, **kwargs)
+def start_scheduler(host, port, volume=None, python=None, preload='', **kwargs):
+    if volume is None:
+        visit = None
+        path = ''
+    else:
+        visit = fn.partial(mount_volume, volume_id=volume, mount='/mnt/volume')
+        path = '/mnt/volume/dask-scheduler'
+    script = preload + SCHEDULE_SCRIPT.format(port=port, path=path)
+    return start_client(python_exec(script, python), host, visit=visit, **kwargs)
 
 ################################################################################
 
@@ -117,10 +142,7 @@ from distributed.cli.dask_worker import go
 from distributed.utils import get_ip_interface
 import os, sys, psutil
 allowed = tuple(psutil.net_if_addrs().keys())
-print(allowed)
-print({interfaces})
 ip = next(get_ip_interface(i) for i in {interfaces} if i in allowed)
-print(ip)
 sys.argv[0] = 'ignore_this.py'
 sys.argv += ['%s:%d' % ('{shost}', {sport})]
 sys.argv += ['--listen-address', 'tcp://%s:%d' % (ip, {port})]
@@ -161,5 +183,3 @@ def test():
             print('Task %d exited with status %s' % (i, r))
         else:
             print('Task %d succeeded' % i)
-
-################################################################################
