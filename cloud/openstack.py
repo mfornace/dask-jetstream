@@ -1,11 +1,12 @@
 """
 Utilities for dealing with OpenStack
 """
+import json, time, itertools
+from concurrent.futures import ThreadPoolExecutor
+
 from novaclient.exceptions import BadRequest, Conflict, NotFound
 from keystoneauth1.exceptions import RetriableConnectionFailure
 import os_client_config
-import json, time, itertools
-from concurrent.futures import ThreadPoolExecutor
 
 import fn
 from .future import async_exe
@@ -25,13 +26,17 @@ def set_config(dict_like):
     IMAGES.update(dict_like['images'])
 
 def lookup(where, key):
+    '''Disambiguates the key repeatedly, if a list takes the first element'''
     while key in where:
         key = where[key]
         key = key if isinstance(key, str) else key[0]
     return key
 
 def close_openstack(pool=None, graceful=True):
+    '''Close all instances and IPs'''
     work = Instance.list() + FloatingIP.list()
+    if not work: 
+        return ()
     if pool is None:
         pool = ThreadPoolExecutor(len(work))
     return tuple(pool.map(lambda i: i.close(graceful=graceful), work))
@@ -39,6 +44,7 @@ def close_openstack(pool=None, graceful=True):
 ################################################################################
 
 def check_version():
+    '''Check version since novaclient 10 or greater has missing method'''
     import novaclient
     novaclient.__version__ = getattr(novaclient, '__version__', '9.1.1')
     from novaclient.v2.servers import Server
@@ -52,24 +58,30 @@ check_version()
 _make_client = fn.lru_cache(4)(os_client_config.make_client)
 
 def as_nova(nova=None):
+    '''Return a nova client from options or a nova client itself'''
     nova = 'compute' if nova is None else nova
     return _make_client(nova) if isinstance(nova, str) else nova
 
 def as_neutron(neutron=None):
+    '''Return a neutron client from options or a neutron client itself'''
     neutron = 'network' if neutron is None else neutron
     return _make_client(neutron) if isinstance(neutron, str) else neutron
 
 ################################################################################
 
-def retry_openstack(function):
+EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict]
+
+def retry_openstack(function, timeout=120, exceptions=None):
+    '''Reattempt OpenStack calls that give given exception types'''
+    exc = tuple(EXCEPTIONS if exceptions is None else exceptions)
     @fn.wraps(function)
     def retryable(*args, **kwargs):
         start = time.time()
         for i in itertools.count():
             try:
                 return function(*args, **kwargs)
-            except (BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict) as e:
-                if time.time() > start + 120: raise e
+            except exc as e:
+                if time.time() > start + timeout: raise e
             time.sleep(2 ** (i-2))
     return retryable
 
@@ -83,15 +95,6 @@ def report(instance=1, flavor=0, ip=0, image=0, as_dict=False):
     N = ['Instances', 'Flavors', 'IPs', 'Images']
     d = {n: f(c) for (n, c, b) in zip(N, C, B) if b}
     return d if as_dict else json.dumps(d, indent=4)
-
-################################################################################
-
-class ClosingContext:
-    def __enter__(self):
-        return self
-
-    def __exit__(self, cls, value, traceback):
-        self.close()
 
 ################################################################################
 
@@ -138,7 +141,7 @@ class Image(OS):
 
 ################################################################################
 
-class FloatingIP(OS, ClosingContext):
+class FloatingIP(OS, fn.ClosingContext):
     @classmethod
     def list(cls, neutron=None):
         return list(map(FloatingIP, as_neutron(neutron).list_floatingips()['floatingips']))
@@ -166,6 +169,7 @@ class FloatingIP(OS, ClosingContext):
     def close(self, graceful=True):
         try:
             retry_openstack(self.neutron.delete_floatingip)(self.id)
+            return None
         except Exception as e:
             return error('Failed to close FloatingIP', exception=e)
 
@@ -174,7 +178,7 @@ for k, v in dict(address='floating_ip_address', id='id').items():
 
 ################################################################################
 
-class Instance(OS, ClosingContext):
+class Instance(OS, fn.ClosingContext):
     '''
     openstack server add security group  ${OS_USERNAME}-api-U-1 global-ssh
     openstack server remove remove security group ${OS_USERNAME}-api-U-1 global-ssh

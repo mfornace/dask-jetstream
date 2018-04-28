@@ -1,10 +1,9 @@
-from .openstack import Instance, ClosingContext, retry_openstack
-from .future import AsyncThread, failed, result, block
-from . import ssh
-
+import asyncio, uuid, distributed
 import fn
 
-import asyncio, uuid, distributed
+from .openstack import Instance, retry_openstack
+from .future import AsyncThread, failed, result, block
+from . import ssh
 
 ################################################################################
 
@@ -30,7 +29,7 @@ class Worker:
 
 ################################################################################
 
-class JetStreamCluster(ClosingContext):
+class JetStreamCluster(fn.ClosingContext):
 
     async def _start_scheduler(self, future, port, volume, **kwargs):
         address = await self._address(future)
