@@ -1,0 +1,7 @@
+cloud
+novaclient
+keystoneauth1
+os_client_config
+asyncssh
+boto3
+fn
