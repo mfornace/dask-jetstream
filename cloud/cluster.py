@@ -17,7 +17,7 @@ class Worker:
         self.port = port
         self.pid = pid
         self.close = None
-    
+
     def __str__(self):
         if failed(self.pid) or failed(self.instance): s = 'error'
         elif not self.instance.done(): s = 'booting'
@@ -51,8 +51,8 @@ class JetStreamCluster(fn.ClosingContext):
 
     def __str__(self):
         return 'JetStreamCluster({})'.format(repr(self.name))
-    
-    def scheduler(self):
+
+    def load_scheduler(self):
         return block(self.workers[0].instance)
 
     async def _address(self, instance):
@@ -71,9 +71,9 @@ class JetStreamCluster(fn.ClosingContext):
         workers = self.workers if workers is None else workers
         out = []
         for w in workers:
-            try: 
+            try:
                 out.append(w.instance.result())
-            except Exception as e: 
+            except Exception as e:
                 out.append(None)
                 error('Failed to create instance', exception=e)
         return out
@@ -87,7 +87,7 @@ class JetStreamCluster(fn.ClosingContext):
         workers = self.workers if workers is None else workers
         for w in workers:
             w.close = self.runner.put(self._close_worker(w)) if w.close is None else w.close
-        self.runner.wait([w.close for w in workers], timeout=timeouts[0])    
+        self.runner.wait([w.close for w in workers], timeout=timeouts[0])
         self.runner.wait([w.instance for w in workers], timeout=timeouts[1])
         inst = self.instances(workers=workers)
         tuple(self.runner.pool.map(lambda i: None if i is None else i.close(), inst))

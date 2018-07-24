@@ -45,11 +45,11 @@ async def stop_client(host, pid, signal='INT', port=22, sleep=(), env={}, **kwar
     info('Killing remote SSH process', host=host, port=port, signal=signal, pid=pid)
     cmd = 'kill -{} {}'.format(signal, int(pid))
     async with await connect(host, port, **kwargs) as conn:
-        if (await conn.run(cmd, env=env, check=False)).exit_status: 
+        if (await conn.run(cmd, env=env, check=False)).exit_status:
             return False
         for t in sleep:
             await asyncio.sleep(t)
-            if (await conn.run(cmd, env=env, check=False)).exit_status: 
+            if (await conn.run(cmd, env=env, check=False)).exit_status:
                 return True
         raise OSError('Process {} could not be killed'.format(pid))
 
@@ -86,7 +86,7 @@ def preload_watchtower(session, group, stream=None, interval=60):
     cred = session.get_credentials()
     if cred is None:
         raise ValueError('No AWS credentials found')
-    return WATCHTOWER_SCRIPT.format(group=repr(group), stream=repr(stream), 
+    return WATCHTOWER_SCRIPT.format(group=repr(group), stream=repr(stream),
         interval=interval, region=session.region_name,
         access=repr(cred.access_key), secret=repr(cred.secret_key))
 
@@ -103,13 +103,15 @@ async def mount_volume(conn, volume_id, mount='/mnt/volume', user='$USER'):
     # You can google this, but it seems to be the only way of identifying the disk:
     cmd = 'ls /dev/disk/by-id/*%s*' % volume_id[:20]
     out = await conn.run(cmd, check=True)
-    dev = out.stdout.strip()
+    # Sometimes part is added i.e. id-part1 etc. and it seems like that is the one we want
+    dev = max(out.stdout.strip().split(), key=len)
     cmd = ' && '.join((
         'sudo mkdir -p {v}',
         'sudo mount {d} {v}',
         'sudo chown -R {u} {v}',
         'sudo chmod -R g+rw {v}'
     )).format(d=dev, v=mount, u=user)
+    print(cmd)
     await conn.run(cmd, check=True)
     return dev
 

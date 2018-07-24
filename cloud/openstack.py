@@ -35,7 +35,7 @@ def lookup(where, key):
 def close_openstack(pool=None, graceful=True):
     '''Close all instances and IPs'''
     work = Instance.list() + FloatingIP.list()
-    if not work: 
+    if not work:
         return ()
     if pool is None:
         pool = ThreadPoolExecutor(len(work))
@@ -69,9 +69,9 @@ def as_neutron(neutron=None):
 
 ################################################################################
 
-EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict]
+EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict, NotFound]
 
-def retry_openstack(function, timeout=120, exceptions=None):
+def retry_openstack(function, timeout=240, exceptions=None):
     '''Reattempt OpenStack calls that give given exception types'''
     exc = tuple(EXCEPTIONS if exceptions is None else exceptions)
     @fn.wraps(function)
@@ -201,7 +201,7 @@ class Instance(OS, fn.ClosingContext):
         self.volumes = []
 
     @classmethod
-    async def create(cls, name, image, flavor, *, pool=None, net=None, nova=None, 
+    async def create(cls, name, image, flavor, *, pool=None, net=None, nova=None,
         userdata=None, key='mfornace-api-key', groups=['mfornace-global-ssh']):
         '''openstack server create ${OS_USERNAME}-api-U-1 \
             --flavor m1.tiny \

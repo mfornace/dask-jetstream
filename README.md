@@ -17,7 +17,7 @@ psutil.net_if_addrs().keys()
 psutil.net_if_addrs()['ens3'][0].address # --> 10.0.0.4, ==WORKERETH
 ```
 
-## openstack 
+## openstack
 
 ```bash
 export PATH=/usr/anaconda3/bin:$PATH
@@ -40,26 +40,25 @@ openstack security group rule create mfornace-global-ssh --protocol tcp --dst-po
 ## Image creation from Ubuntu 16
 Reboot instance first. We should redo the pip installs to be conda sometime.
 ```bash
-apt update
-dpkg --configure -a
-apt upgrade -f # takes a while
-apt dist-upgrade
+sudo apt update
+sudo dpkg --configure -a
+sudo apt upgrade -f # takes a while
+sudo apt dist-upgrade
 
 wget https://repo.continuum.io/archive/Anaconda3-5.1.0-Linux-x86_64.sh
 bash *.sh # use /usr/anaconda as the prefix
 
-conda update --prefix /usr/anaconda anaconda
-conda update -n base conda
-conda install numpy scipy pandas matplotlib
-conda install -c omnia openmm
 # conda install -c omnia autograd doesnt work, too old version, had to install from setup.py
-conda install -c anaconda netcdf4
-conda upgrade --all
-
-pip install -U pip
+sudo /usr/anaconda/bin/conda update --prefix /usr/anaconda anaconda && \
+sudo /usr/anaconda/bin/conda update -n base conda && \
+sudo /usr/anaconda/bin/conda install numpy scipy pandas matplotlib && \
+sudo /usr/anaconda/bin/conda install -c omnia openmm && \
+sudo /usr/anaconda/bin/conda install -c anaconda netcdf4 && \
+sudo /usr/anaconda/bin/conda install pytorch torchvision -c pytorch
+sudo /usr/anaconda/bin/conda upgrade --all && \
+sudo /usr/anaconda/bin/pip install -U pip && \
+sudo /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient==3.5.0 python-dateutil==2.7.2 python-designateclient==2.9.0 python-editor==1.0.3 python-glanceclient==2.11.0 python-heatclient==1.15.0 python-json-logger python-keystoneclient==3.16.0 python-mimeparse==1.6.0 python-neutronclient==6.8.0 python-novaclient==9.1.1 python-openstackclient==3.15.0 python-swiftclient==3.5.0 s3fs scikit-learn seaborn tenacity tensorboard==1.7.0 tensorflow-tensorboard==1.5.1 tensorflow==1.7.0 termcolor theano watchtower xarray yolk3k
 # pip install -U pycuda pyopencl only if has GPU
-pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient==3.5.0 python-dateutil==2.7.2 python-designateclient==2.9.0 python-editor==1.0.3 python-glanceclient==2.11.0 python-heatclient==1.15.0 python-json-logger python-keystoneclient==3.16.0 python-mimeparse==1.6.0 python-neutronclient==6.8.0 python-novaclient==9.1.1 python-openstackclient==3.15.0 python-swiftclient==3.5.0 s3fs scikit-learn seaborn tenacity tensorboard==1.7.0 tensorflow-tensorboard==1.5.1 tensorflow==1.7.0 termcolor theano watchtower xarray yolk3k 
-
 
 # make sure python2 has numpy
 wget http://ambermd.org/downloads/install_ambertools.sh
@@ -100,8 +99,8 @@ env = {
 ```
 
 ## SSH troubleshooting
-To remove an remote IP if SSH fails due to remote host changing, run 
-`ssh-keygen -R YOURIP`. 
+To remove an remote IP if SSH fails due to remote host changing, run
+`ssh-keygen -R YOURIP`.
 
 Otherwise you can connect without host checking via
 `ssh -o UserKnownHostsFile=/dev/null YOURIP`.
@@ -111,17 +110,17 @@ I copied these files along with `rna_denovo` and `rna_extract` executables to th
 Otherwise you get all of Rosetta which is like 30 GB.
 
 ```bash
-scp -r database/chemical 
-scp -r database/scoring/weights 
-scp -r database/scoring/rna 
-scp -r database/scoring/score_functions/hbonds 
-scp -r database/scoring/score_functions/carbon_hbond 
-scp -r database/sampling/rna 
-scp -r database/input_output 
+scp -r database/chemical
+scp -r database/scoring/weights
+scp -r database/scoring/rna
+scp -r database/scoring/score_functions/hbonds
+scp -r database/scoring/score_functions/carbon_hbond
+scp -r database/sampling/rna
+scp -r database/input_output
 ```
 
 ## Environment variables
-Make sure this line is in `/etc/ssh/sshd_config` 
+Make sure this line is in `/etc/ssh/sshd_config`
 ```bash
 AcceptEnv *
 ```
@@ -137,6 +136,7 @@ i.resume()
 i.close()
 ```
 
+# openstack volume create --size 256 --type default --image 5a5235ed-628b-43cc-a6d5-3ff54439abf2 ubuntu-16-conda3-dask-scheduler
 
 ## Volume
 ```bash
@@ -150,7 +150,7 @@ My device ID was scsi-0QEMU_QEMU_HARDDISK_b2414c9c-ff4a-4a7c-a.
 ```bash
 ls /dev/disk/by-id/${DEVICE_ID} # 1 time
 sudo mkfs.ext4 /dev/disk/by-id/${DEVICE_ID} # 1 time
-sudo mkdir -p /mnt/volume 
+sudo mkdir -p /mnt/volume
 sudo mount /dev/disk/by-id/${DEVICE_ID} /mnt/volume
 sudo umount /mnt/volume
 ```
@@ -160,4 +160,9 @@ Then detach the volume.
 ## Seeing limits/resource restrictions
 ```bash
 openstack limits show --absolute
+```
+
+## Caching in notebook
+```bash
+pip install git+https://github.com/rossant/ipycache.git
 ```
