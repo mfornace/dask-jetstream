@@ -69,9 +69,9 @@ def as_neutron(neutron=None):
 
 ################################################################################
 
-EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict, NotFound]
+EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict]
 
-def retry_openstack(function, timeout=240, exceptions=None):
+def retry_openstack(function, timeout=120, exceptions=None):
     '''Reattempt OpenStack calls that give given exception types'''
     exc = tuple(EXCEPTIONS if exceptions is None else exceptions)
     @fn.wraps(function)
@@ -109,8 +109,12 @@ class OS:
     def __getattr__(self, name):
         return getattr(self.os, name)
 
+    @property
+    def name(self):
+        return getattr(self.os, 'name', 'unnamed')
+
     def __str__(self):
-        return "{}('{}')".format(type(self).__name__, self.os.name)
+        return "{}('{}')".format(type(self).__name__, self.name)
 
 ################################################################################
 
@@ -239,6 +243,7 @@ class Instance(OS, fn.ClosingContext):
     def add_ip(self, ip):
         '''openstack server add floating ip ${OS_USERNAME}-api-U-1 your.ip.number.here'''
         out = self.os.add_floating_ip(ip.address)
+        #as_neutron().update_floatingip(ip.id, {'floatingip': {'port_id': self.id}})
         self._ip = ip
         return out
 
@@ -265,6 +270,11 @@ class Instance(OS, fn.ClosingContext):
 
     def address(self, retry=True, neutron=None):
         return self.ip(retry=retry, neutron=neutron).address
+
+    def prune(self, pid=True):
+        '''Remove workers that are errored'''
+        f = (lambda w: w.pid) if pid else (lambda w: w.instance)
+        self.workers = [w for w in self.workers if not f(w).done() or f(w).exception() is None]
 
     def create_image(self, name, public=False, **metadata):
         metadata['visibility'] = 'public' if public else 'private'

@@ -45,7 +45,7 @@ class JetStreamCluster(fn.ClosingContext):
         self.runner = AsyncThread()
         self.image = image
         sc = self.runner.put(Instance.create(self.name, image=image, flavor=flavor))
-        pid = self.runner.put(self._start_scheduler(sc, port, volume, **self.exe_options,  **ssh))
+        pid = self.runner.put(self._start_scheduler(sc, port=port, volume=volume, **self.exe_options,  **ssh))
         info('Started scheduler instance and process')
         self.workers = [Worker(sc, port, pid)]
 
@@ -83,6 +83,11 @@ class JetStreamCluster(fn.ClosingContext):
         [addr] = self.runner.wait([self._address(self.workers[0].instance)], timeout=None)[0]
         return '%s:%d' % (addr.result(), self.workers[0].port)
 
+    def __getstate__(self):
+        out = dict(self.__dict__)
+        out.pop('runner')
+        out['workers'] = [() for w in self.workers]
+
     def close(self, *, workers=None, timeouts=(60, 60)):
         workers = self.workers if workers is None else workers
         for w in workers:
@@ -103,7 +108,7 @@ class JetStreamCluster(fn.ClosingContext):
         options.update(kwargs)
         return await ssh.start_worker(*zip(addrs, [port, self.workers[0].port]), **self.exe_options, **options)
 
-    def add_worker(self, flavor, image=None, port=8000, **kwargs):
+    def add_workers(self, flavor, image=None, ports=(8000,), **kwargs):
         '''
         wait for instance.status() to be active
         and wait for instance.ip()
@@ -111,12 +116,15 @@ class JetStreamCluster(fn.ClosingContext):
             --listen-address tcp://{WORKERETH}:8001
             --contact-address tcp://{WORKERIP}:8001
         '''
+        out = []
         name = '{}-{}'.format(self.name, len(self.workers))
         image = self.image if image is None else image
         inst = self.runner.put(Instance.create(name, image=image, flavor=flavor))
-        pid = self.runner.put(self._start_worker(inst, port, **kwargs))
-        self.workers.append(Worker(inst, port, pid))
-        return self.workers[-1]
+        for port in ports:
+            pid = self.runner.put(self._start_worker(inst, port, **kwargs))
+            out.append(Worker(inst, port, pid))
+            self.workers.append(out[-1])
+        return out
 
     def client(self, attempts=10, **kwargs):
         '''Wait for scheduler to be initialized and return Client(self)'''

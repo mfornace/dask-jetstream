@@ -34,7 +34,7 @@ def retry(function, timeouts, exceptions=()):
 ################################################################################
 
 connect = retry(asyncssh.connect, [1,2,4,8] + 20 * [16],
-                exceptions=(ConnectionRefusedError, OSError))
+                exceptions=(ConnectionRefusedError, OSError, asyncssh.DisconnectError))
 
 ################################################################################
 
@@ -44,7 +44,7 @@ async def stop_client(host, pid, signal='INT', port=22, sleep=(), env={}, **kwar
     '''
     info('Killing remote SSH process', host=host, port=port, signal=signal, pid=pid)
     cmd = 'kill -{} {}'.format(signal, int(pid))
-    async with await connect(host, port, **kwargs) as conn:
+    with await connect(host, port, **kwargs) as conn:
         if (await conn.run(cmd, env=env, check=False)).exit_status:
             return False
         for t in sleep:
@@ -61,7 +61,7 @@ async def start_client(cmd, host, ssh_port=22, env={}, visit=None, **kwargs):
     cmd = "sh -c 'nohup {} </dev/null >/dev/null 2>&1 & echo $!'".format(cmd.replace(r"'", r"'\''").replace(r'"', r"'\"'"))
     info('Connecting to client', host=host, port=ssh_port, kwargs=str(kwargs))
     info('Running command', cmd=cmd)
-    async with await connect(host, ssh_port, **kwargs) as conn: # not sure why I have to await here
+    with await connect(host, ssh_port, **kwargs) as conn: # not sure why I have to await here
         info('Starting SSH command')
         if visit is not None:
             await visit(conn)
@@ -139,6 +139,7 @@ def start_scheduler(host, port, volume=None, python=None, preload='', **kwargs):
 ################################################################################
 
 # A wrapper around dask-worker to provide some more flexibility
+# Processes must be set to 1 because of limitation on listen address
 WORK_SCRIPT = """
 from distributed.cli.dask_worker import go
 from distributed.utils import get_ip_interface
@@ -150,7 +151,10 @@ sys.argv += ['%s:%d' % ('{shost}', {sport})]
 sys.argv += ['--listen-address', 'tcp://%s:%d' % (ip, {port})]
 sys.argv += ['--contact-address', 'tcp://%s:%d' % ('{host}', {port})]
 sys.argv += ['--nprocs', '1']
-sys.argv += ['--nthreads', str(os.cpu_count())]
+sys.argv += ['--nthreads', '1']
+sys.argv += ['--no-bokeh']
+#sys.argv += ['--no-nanny']
+sys.argv += ['--reconnect']
 go()
 """
 
@@ -159,6 +163,7 @@ def start_worker(address, scheduler, *, preload='', python=None, interfaces=['et
     address and scheduler are pairs of (IP, port)
     dask-worker {SCHEDULERIP}:8786 --nthreads 0 --nprocs 1 --listen-address tcp://{WORKERETH}:8001 --contact-address tcp://{WORKERIP}:8001
     interfaces is a list of possible IP interfaces that should be tried in order
+    returns coroutine
     '''
     host, port = address
     shost, sport = scheduler

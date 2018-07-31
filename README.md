@@ -17,6 +17,16 @@ psutil.net_if_addrs().keys()
 psutil.net_if_addrs()['ens3'][0].address # --> 10.0.0.4, ==WORKERETH
 ```
 
+## Queuing with dask
+
+```python
+import queue
+reaction_q = queue.Queue()
+remote_q = client.scatter(reaction_q)
+sim_dataset_q = client.map(run_reaction, remote_q)
+result_q = client.gather(sim_dataset_q)
+```
+
 ## openstack
 
 ```bash
@@ -141,6 +151,7 @@ i.close()
 ## Volume
 ```bash
 openstack volume type list
+openstack volume list
 # 2559f0ae-7116-46b6-9ccd-5feecdadd3d5 | default | True      |
 openstack limits show
 openstack volume create --size 256 --type default --image 27a174a7-046f-41a6-8952-2b86a28ff599 ubuntu-16-conda3-dask-scheduler
@@ -162,7 +173,56 @@ Then detach the volume.
 openstack limits show --absolute
 ```
 
+### Maximum ports
+
+This appears to only be modifiable by the administrator, not the user.
+```bash
+neutron quota-show -c port
+neutron quota-update --port 100 # doesnt work unless administrator
+```
+
 ## Caching in notebook
 ```bash
 pip install git+https://github.com/rossant/ipycache.git
+```
+
+## Setting up cluster
+
+```python
+print(cloud.Flavor.list())
+cluster = cloud.JetStreamCluster(None, 'm1.large', 'dask-agent', volume=None, python='/usr/anaconda/bin/python', # volume='dask-scheduler'
+                                 preload=preload, ssh=dict(username='ubuntu', env=env, known_hosts=None))
+
+for i in range(4):
+    cluster.add_worker('m1.large')
+
+import time
+for i in range(80):
+    print(i)
+    #print(*map(str, cluster.workers), sep='\n')
+    while not cluster.workers[-1].pid.done():
+        time.sleep(1)
+    cluster.add_worker('m1.xlarge')
+
+client = cluster.client()
+```
+
+## Uploading modules
+
+```python
+!bash eggs.sh
+client.upload_file('eggs/fn-0.1.0-py3.6.egg')
+client.upload_file('eggs/cloud-0.1.0-py3.6.egg')
+client.upload_file('eggs/md-0.1.0-py3.6.egg')
+```
+
+## OpenStack creation/deletion
+
+```python
+fn.stream_json_logs()
+cloud.ssh.redirect_ssh_logs('ssh.log')
+fs = fn.s3.FileSystem()
+cloud.set_config(yaml.load(open('config.yml')))
+
+print(cloud.close_openstack(graceful=True))
 ```
