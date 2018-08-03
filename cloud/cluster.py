@@ -1,114 +1,48 @@
-import asyncio, uuid, distributed
+import asyncio, uuid, distributed, logging
 import fn
 
-from .openstack import Instance, retry_openstack
+from .openstack import Instance, FloatingIP, retry_openstack
 from .future import AsyncThread, failed, result, block
-from . import ssh
+from .script import scheduler_script, worker_script
 
-################################################################################
-
-info, error = fn.logs(__name__, 'info', 'error')
-
-################################################################################
-
-class Worker:
-    def __init__(self, instance, port, pid):
-        self.instance = instance
-        self.port = port
-        self.pid = pid
-        self.close = None
-
-    def __str__(self):
-        if failed(self.pid) or failed(self.instance): s = 'error'
-        elif not self.instance.done(): s = 'booting'
-        elif not self.pid.done(): s = 'connecting'
-        elif self.close is None: s = 'active'
-        elif self.close.done(): s = 'closed'
-        else: s = 'closing'
-        return '(status={}, port={}, pid={}, instance={})'.format(s, self.port, result(self.pid), result(self.instance))
+log = logging.getLogger(__name__)
 
 ################################################################################
 
 class JetStreamCluster(fn.ClosingContext):
+    async def _scheduler(self, flavor, volume):
+        host = str(await self.scheduler[0])
+        script = scheduler_script(host, self.scheduler[1], volume, python=self.python, preload=self.preload)
+        log.debug(fn.message('Submitting scheduler script', contents=script))
+        return await Instance.create(self.name, image=self.image, flavor=flavor, ip=self.scheduler[0], userdata=script)
 
-    async def _start_scheduler(self, future, port, volume, **kwargs):
-        address = await self._address(future)
-        if volume is not None:
-            inst = await future
-            volume = await self.runner.execute(retry_openstack(inst.attach_volume), volume)
-        return await ssh.start_scheduler(address, port, volume, **kwargs)
-
-    def __init__(self, name, flavor, image, port=8786, *, python=None, volume=None, preload='', ssh={}):
+    def __init__(self, name, flavor, image, port=8786, *, preload=None, python=None, volume=None):
         self.name = str(uuid.uuid4()) if name is None else name
-        self.exe_options = dict(python=python, preload=preload)
-        self.ssh_options = ssh
+        self.python = python
         self.runner = AsyncThread()
         self.image = image
-        sc = self.runner.put(Instance.create(self.name, image=image, flavor=flavor))
-        pid = self.runner.put(self._start_scheduler(sc, port=port, volume=volume, **self.exe_options,  **ssh))
-        info('Started scheduler instance and process')
-        self.workers = [Worker(sc, port, pid)]
+        self.scheduler = (self.runner.execute(retry_openstack(FloatingIP.create), 'public'), port)
+        self.preload = preload
+        self.instances = [self.runner.put(self._scheduler(flavor, volume))]
 
-    def __str__(self):
-        return 'JetStreamCluster({})'.format(repr(self.name))
-
-    def load_scheduler(self):
-        return block(self.workers[0].instance)
-
-    async def _address(self, instance):
+    async def _close(self, instance):
         inst = await instance
-        return await self.runner.execute(retry_openstack(inst.address))
+        await self.runner.execute(retry_openstack(inst.close))
 
-    async def _close_worker(self, worker, signal='INT', sleep=None, **kwargs):
-        sleep = (0.1, 0.25, 0.5, 1, 1, 1, 2, 5) if sleep is None else sleep
-        options = self.ssh_options.copy()
-        options.update(kwargs)
-        address = await self._address(worker.instance)
-        pid = await worker.pid
-        await ssh.stop_client(address, pid, signal=signal, sleep=sleep, **options)
+    def close(self, *, instances=None):
+        '''Stop a set of workers which defaults to all workers'''
+        instances = self.instances if instances is None else instances
+        return [self.runner.put(self._close(i)) for i in self.instances]
 
-    def instances(self, *, workers=None):
-        workers = self.workers if workers is None else workers
-        out = []
-        for w in workers:
-            try:
-                out.append(w.instance.result())
-            except Exception as e:
-                out.append(None)
-                error('Failed to create instance', exception=e)
-        return out
+    async def _worker(self, name, image, flavor, port=8785, preload=None):
+        scheduler = await self.scheduler[0], self.scheduler[1]
+        host = self.runner.execute(retry_openstack(FloatingIP.create), 'public')
+        ip = await host
+        script = worker_script((ip, port), scheduler=scheduler, python=self.python, preload=preload)
+        log.debug(fn.message('Submitting worker script', contents=script))
+        return await Instance.create(name, image=image, flavor=flavor, ip=host, userdata=script)
 
-    @property
-    def scheduler_address(self):
-        [addr] = self.runner.wait([self._address(self.workers[0].instance)], timeout=None)[0]
-        return '%s:%d' % (addr.result(), self.workers[0].port)
-
-    def __getstate__(self):
-        out = dict(self.__dict__)
-        out.pop('runner')
-        out['workers'] = [() for w in self.workers]
-
-    def close(self, *, workers=None, timeouts=(60, 60)):
-        workers = self.workers if workers is None else workers
-        for w in workers:
-            w.close = self.runner.put(self._close_worker(w)) if w.close is None else w.close
-        self.runner.wait([w.close for w in workers], timeout=timeouts[0])
-        self.runner.wait([w.instance for w in workers], timeout=timeouts[1])
-        inst = self.instances(workers=workers)
-        tuple(self.runner.pool.map(lambda i: None if i is None else i.close(), inst))
-        return tuple(w for (i, w) in zip(inst, workers) if i is None)
-
-    def stop_worker(self, w):
-        return self.close(workers=[w])[0]
-
-    async def _start_worker(self, instance, port, **kwargs):
-        '''ok'''
-        addrs = await asyncio.gather(*map(self._address, (instance, self.workers[0].instance)))
-        options = self.ssh_options.copy()
-        options.update(kwargs)
-        return await ssh.start_worker(*zip(addrs, [port, self.workers[0].port]), **self.exe_options, **options)
-
-    def add_workers(self, flavor, image=None, ports=(8000,), **kwargs):
+    def add_worker(self, flavor, image=None, preload=None):
         '''
         wait for instance.status() to be active
         and wait for instance.ip()
@@ -116,25 +50,33 @@ class JetStreamCluster(fn.ClosingContext):
             --listen-address tcp://{WORKERETH}:8001
             --contact-address tcp://{WORKERIP}:8001
         '''
-        out = []
-        name = '{}-{}'.format(self.name, len(self.workers))
+        name = '{}-{}'.format(self.name, len(self.instances))
         image = self.image if image is None else image
-        inst = self.runner.put(Instance.create(name, image=image, flavor=flavor))
-        for port in ports:
-            pid = self.runner.put(self._start_worker(inst, port, **kwargs))
-            out.append(Worker(inst, port, pid))
-            self.workers.append(out[-1])
-        return out
+        self.instances.append(self.runner.put(self._worker(name, image, flavor, preload=preload)))
+
+    @property
+    def scheduler_address(self):
+        [addr] = self.runner.wait([self.scheduler[0]], timeout=None)[0]
+        return '%s:%d' % (addr.result(), self.scheduler[1])
 
     def client(self, attempts=10, **kwargs):
         '''Wait for scheduler to be initialized and return Client(self)'''
-        block(self.workers[0].pid)
-        self.workers[0].pid.result() # check for error in startup
+        block(self.workers[0])
         for i in reversed(range(attempts)):
             try:
                 return distributed.Client(self, **kwargs)
             except (TimeoutError, ConnectionRefusedError, OSError) as e:
                 if i == 0: raise e
+
+    def __str__(self):
+        return 'JetStreamCluster({}, {})'.format(repr(self.name), len(self.instances))
+
+    __repr__ = __str__
+
+    #def __getstate__(self):
+    #    out = dict(self.__dict__)
+    #    out.pop('runner')
+    #    out['workers'] = [() for w in self.workers]
 
     # async def scale_up(self, n, **kwargs):
     #     """ Bring the total count of tasks up to ``n``
@@ -169,6 +111,7 @@ class JetStreamCluster(fn.ClosingContext):
 
     #         # stop the provided workers
     #         #yield [self._stop_worker(w) for w in workers]
+
 
 ################################################################################
 

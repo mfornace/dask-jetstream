@@ -1,3 +1,10 @@
+## AWS
+
+```bash
+brew install awscli
+```
+
+## Something
 `setup.py bdist_egg`
 
 now egg is in dist
@@ -137,7 +144,7 @@ AcceptEnv *
 
 ## Image scheduler
 ```python
-i = cluster.workers[0].instance.result()
+i = cluster.instances[0].result() # get an Instance object
 i.suspend()
 # wait 5 minutes or so; status should say suspended eventually
 image_id = i.create_image('ubuntu-16-conda3-dask', public=False, skip_atmosphere='yes')
@@ -219,10 +226,22 @@ client.upload_file('eggs/md-0.1.0-py3.6.egg')
 ## OpenStack creation/deletion
 
 ```python
-fn.stream_json_logs()
+fn.stream_logs()
 cloud.ssh.redirect_ssh_logs('ssh.log')
 fs = fn.s3.FileSystem()
 cloud.set_config(yaml.load(open('config.yml')))
 
 print(cloud.close_openstack(graceful=True))
+```
+
+## Instance files
+- /etc/security/limits.conf - to set the open file limit
+- /var/log/cloud-init-output.log - user script output
+- /var/log/cloud-init.log - another user script output
+
+Useful commmands
+```bash
+ps aux | grep python # get the cloud-init PIDs
+sudo tail -f /var/log/cloud-init-output.log # look at logs
+sudo cat /root/config.json # cat the config
 ```

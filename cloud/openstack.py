@@ -1,7 +1,7 @@
 """
 Utilities for dealing with OpenStack
 """
-import json, time, itertools
+import json, time, itertools, logging
 from concurrent.futures import ThreadPoolExecutor
 
 from novaclient.exceptions import BadRequest, Conflict, NotFound
@@ -11,9 +11,7 @@ import os_client_config
 import fn
 from .future import async_exe
 
-################################################################################
-
-info, error = fn.logs(__name__, 'info', 'error')
+log = logging.getLogger(__name__)
 
 ################################################################################
 
@@ -166,16 +164,16 @@ class FloatingIP(OS, fn.ClosingContext):
     def __str__(self):
         return self.address
 
+    def __repr__(self):
+        return "FloatingIP('%s')" % self.address
+
     def status(self):
         self.os = self.neutron.find_resource_by_id('floatingip', self.id)
         return self.os['status'].lower()
 
     def close(self, graceful=True):
-        try:
+        with fn.ErrorContext(log, 'Failed to close FloatingIP'):
             retry_openstack(self.neutron.delete_floatingip)(self.id)
-            return None
-        except Exception as e:
-            return error('Failed to close FloatingIP', exception=e)
 
 for k, v in dict(address='floating_ip_address', id='id').items():
     setattr(FloatingIP, k, property(lambda self, v=v: self.os[v]))
@@ -205,7 +203,7 @@ class Instance(OS, fn.ClosingContext):
         self.volumes = []
 
     @classmethod
-    async def create(cls, name, image, flavor, *, pool=None, net=None, nova=None,
+    async def create(cls, name, image, flavor, *, ip=None, pool=None, net=None, nova=None,
         userdata=None, key='mfornace-api-key', groups=['mfornace-global-ssh']):
         '''openstack server create ${OS_USERNAME}-api-U-1 \
             --flavor m1.tiny \
@@ -215,13 +213,16 @@ class Instance(OS, fn.ClosingContext):
             --nic net-id=${OS_USERNAME}-api-net
         '''
         nics = [{'net-id': Network(net).id}]
-        info('Creating OpenStack instance', image=str(image), flavor=str(flavor))
+        log.info(fn.message('Creating OpenStack instance', image=str(image), flavor=str(flavor)))
         os = await async_exe(pool, as_nova(nova).servers.create, name=name, image=Image(image).os,
             flavor=Flavor(flavor).os, key_name=key, nics=nics, security_groups=groups, userdata=userdata)
         out = Instance(os)
-        with error.context('Failed to create IP'):
-            ip = await async_exe(pool, FloatingIP.create, 'public')
-        with error.context('Failed to associate IP with server'):
+        with fn.ErrorContext(log, 'Failed to create IP'):
+            if ip is None:
+                ip = await async_exe(pool, FloatingIP.create, 'public')
+            else:
+                ip = await ip
+        with fn.ErrorContext(log, 'Failed to associate IP with server'):
             await async_exe(pool, retry_openstack(out.add_ip), ip)
         return out
 
@@ -295,10 +296,8 @@ class Instance(OS, fn.ClosingContext):
             pass
         ips = {i['floating_ip_address'] : i for i in as_neutron(neutron).list_floatingips()['floatingips']}
         [FloatingIP(ips[ip]).close() for n in self.os.networks.values() for ip in n if ip in ips]
-        try:
+        with fn.ErrorContext(log, 'Failed to close Instance'):
             retry_openstack(self.nova.servers.delete)(self.os)
-        except Exception as e:
-            return error('Failed to close Instance', exception=e)
 
     def __str__(self):
         ip = ', ip={}'.format(self._ip) if self._ip else ''

@@ -1,3 +1,4 @@
+import fn
 from remote import ssh
 from remote.jetstream import Instance
 
@@ -10,7 +11,7 @@ log = logging.getLogger()
 def early_exit(event, index, sleep=0):
     '''Check if an event is set, if not sleep a while'''
     if event.is_set():
-        log.info('%s -- exiting early' % index)
+        log.info(fn.message('%s -- exiting early' % index))
         return True
     if sleep: time.sleep(sleep)
     return False
@@ -21,8 +22,8 @@ def boot_instance(instance, index, event):
     '''Start the instance'''
     stop = lambda t: early_exit(event, index, t)
     if stop(0): return
-    log.info('%s -- booted with id %s' % (index, instance.id))
-    
+    log.info(fn.message('%s -- booted with id %s' % (index, instance.id))
+
     while instance.status() != 'active': # Wait to become active
         if stop(5): return
 
@@ -30,7 +31,7 @@ def boot_instance(instance, index, event):
     while ip.status() != 'active':
         if stop(5): return
 
-    log.info('%s -- started at %s' % (index, ip.address))
+    log.info(fn.message('%s -- started at %s' % (index, ip.address))
 
 ###############################################################################
 
@@ -39,22 +40,22 @@ def launch_scheduler(event, index, address, timeout):
     stop = lambda t: early_exit(event, index, t)
     for n in range(1, 360):
         if ssh.remote_submit(address, 'local', settings, python='/usr/anaconda3/bin/python3', user='root'):
-            log.info('%s -- submitted after %d tries' % (index, n))
+            log.info(fn.message('%s -- submitted after %d tries' % (index, n))
             n = int(timeout / 5) + 1
             for _ in range(n):
                 if stop(timeout / n): return
-            log.info('%s -- completed' % index)
+            log.info(fn.message('%s -- completed' % index)
             break
         for _ in range(4):
             if stop(5): return
-        log.info('%s -- failed SSH connection on attempt %d' % (index, n))
+        log.info(fn.message('%s -- failed SSH connection on attempt %d' % (index, n))
     else:
-        log.info('%s -- could not make SSH connection' % index)
+        log.info(fn.message('%s -- could not make SSH connection' % index)
 
 ###############################################################################
 
 def work(index, name, event, image, flavor):
-    log.info('%s -- initialized as %s' % (index, name))
+    log.info(fn.message('%s -- initialized as %s' % (index, name))
     instance = Instance(name, image=image, flavor=flavor)
     try:
         boot_instance(instance, index, event)
@@ -63,7 +64,7 @@ def work(index, name, event, image, flavor):
         raise e
     finally:
         instance.delete()
-        log.info('%s -- deleted' % index)
+        log.info(fn.message('%s -- deleted' % index)
 
 ###############################################################################
 
@@ -90,9 +91,9 @@ class JetStreamCluster:
     def poll(self):
         self.workers = [w for w in self.workers if w.is_alive()]
         return len(self.workers)
-    
+
     def stop(self):
-        log.info('deleting workers due to stop() command')
+        log.info(fn.message('deleting workers due to stop() command')
         self.event.set()
         for w in self.workers: w.join()
         self.event.clear()
