@@ -24,10 +24,10 @@ def set_config(dict_like):
     IMAGES.update(dict_like['images'])
 
 def lookup(where, key):
-    '''Disambiguates the key repeatedly, if a list takes the first element'''
+    '''Disambiguates the key repeatedly, if a list takes the last element'''
     while key in where:
         key = where[key]
-        key = key if isinstance(key, str) else key[0]
+        key = key if isinstance(key, str) else key[-1]
     return key
 
 def close_openstack(pool=None, graceful=True):
