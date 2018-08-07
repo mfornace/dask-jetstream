@@ -238,10 +238,11 @@ print(cloud.close_openstack(graceful=True))
 - /etc/security/limits.conf - to set the open file limit
 - /var/log/cloud-init-output.log - user script output
 - /var/log/cloud-init.log - another user script output
+- /var/lib/cloud/instance/scripts/part-001 - where the script is
 
 Useful commmands
 ```bash
 ps aux | grep python # get the cloud-init PIDs
 sudo tail -f /var/log/cloud-init-output.log # look at logs
-sudo cat /root/config.json # cat the config
+sudo cat /root/dask.yml # cat the config
 ```

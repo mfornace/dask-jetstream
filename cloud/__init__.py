@@ -1,4 +1,4 @@
-import os as _os, inspect as _in
+import os as _os, inspect as _in, sys as _sys
 
 from .openstack import *
 from .cluster import *
@@ -18,3 +18,7 @@ def task_distribution(who_has):
         if not v:
             out.setdefault(None, []).append(k)
     return out
+
+def module_versions():
+    ver = lambda v: getattr(v, 'version', None) or getattr(v, '__version__', None)
+    return {k: ver(v) for k, v in sorted(_sys.modules.items()) if isinstance(ver(v), str)}
