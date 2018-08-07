@@ -3,6 +3,7 @@ import os as _os, inspect as _in, sys as _sys
 from .openstack import *
 from .cluster import *
 from .script import *
+from .cloudwatch import *
 
 import psutil
 
