@@ -1,13 +1,16 @@
-## AWS
+## Introduction
+`dask-jetstream` is a Python 3 software package for running jobs in parallel on the NSF XSEDE JetStream cluster using the dask.distributed framework. Besides code comments, the documentation for this software is in current development.
+
+Below are some notes for performing some common tasks and commands.
+
+## To install AWS command line on Mac
 
 ```bash
 brew install awscli
 ```
 
-## Something
+## Example Python egg installation
 `setup.py bdist_egg`
-
-now egg is in dist
 
 ```
 conda update
