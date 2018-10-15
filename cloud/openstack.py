@@ -17,6 +17,9 @@ log = logging.getLogger(__name__)
 
 FLAVORS, VOLUMES, NETWORKS, IMAGES = set(), {}, {}, {}
 
+DEFAULT_OS_KEY = ''
+DEFAULT_OS_GROUPS = []
+
 def set_config(dict_like):
     VOLUMES.update(dict_like['volumes'])
     NETWORKS.update(dict_like['networks'])
@@ -69,7 +72,7 @@ def as_neutron(neutron=None):
 
 EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict]
 
-def retry_openstack(function, timeout=120, exceptions=None):
+def retry_openstack(function, timeout=500, exceptions=None):
     '''Reattempt OpenStack calls that give given exception types'''
     exc = tuple(EXCEPTIONS if exceptions is None else exceptions)
     @fn.wraps(function)
@@ -80,7 +83,7 @@ def retry_openstack(function, timeout=120, exceptions=None):
                 return function(*args, **kwargs)
             except exc as e:
                 if time.time() > start + timeout: raise e
-            time.sleep(2 ** (i-2))
+            time.sleep(1.5 ** (i-2))
     return retryable
 
 ################################################################################
@@ -204,7 +207,7 @@ class Instance(OS, fn.ClosingContext):
 
     @classmethod
     async def create(cls, name, image, flavor, *, ip=None, pool=None, net=None, nova=None,
-        userdata=None, key='mfornace-api-key', groups=['mfornace-global-ssh']):
+        userdata=None, key=DEFAULT_OS_KEY, groups=DEFAULT_OS_GROUPS):
         '''openstack server create ${OS_USERNAME}-api-U-1 \
             --flavor m1.tiny \
             --image IMAGE-NAME \

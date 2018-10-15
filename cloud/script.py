@@ -1,6 +1,6 @@
 import asyncio, sys, functools, logging, string, boto3, fn, dask, distributed
 
-from . import templates
+from . import templates, cloudwatch
 
 log = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ def preload_cloudwatch(session, group, stream=None, interval=60):
     cred = session.get_credentials()
     if cred is None:
         raise ValueError('No AWS credentials found')
-    with open(fn.cloudwatch.__file__) as f:
+    with open(cloudwatch.__file__) as f:
         mod = f.read()
     return configure() + mod + templates.cloudwatch.substitute(group=repr(group), stream=repr(stream),
         interval=interval, region=session.region_name,
