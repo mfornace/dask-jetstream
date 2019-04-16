@@ -74,10 +74,11 @@ sudo /usr/anaconda/bin/conda update -n base conda && \
 sudo /usr/anaconda/bin/conda install numpy scipy pandas matplotlib && \
 sudo /usr/anaconda/bin/conda install -c omnia openmm && \
 sudo /usr/anaconda/bin/conda install -c anaconda netcdf4 && \
-sudo /usr/anaconda/bin/conda install pytorch torchvision -c pytorch
+sudo /usr/anaconda/bin/conda install pytorch torchvision -c pytorch && \
 sudo /usr/anaconda/bin/conda upgrade --all && \
 sudo /usr/anaconda/bin/pip install -U pip && \
-sudo /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient==3.5.0 python-dateutil==2.7.2 python-designateclient==2.9.0 python-editor==1.0.3 python-glanceclient==2.11.0 python-heatclient==1.15.0 python-json-logger python-keystoneclient==3.16.0 python-mimeparse==1.6.0 python-neutronclient==6.8.0 python-novaclient==9.1.1 python-openstackclient==3.15.0 python-swiftclient==3.5.0 s3fs scikit-learn seaborn tenacity tensorboard==1.7.0 tensorflow-tensorboard==1.5.1 tensorflow==1.7.0 termcolor theano watchtower xarray yolk3k
+sudo /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient python-dateutil python-designateclient python-editor python-glanceclient python-heatclient python-json-logger python-keystoneclient python-mimeparse python-neutronclient python-novaclient python-openstackclient python-swiftclient s3fs scikit-learn seaborn tenacity tensorboard tensorflow-tensorboard tensorflow termcolor theano watchtower xarray yolk3k protobuf keystoneauth1
+# sudo /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient==3.5.0 python-dateutil==2.7.2 python-designateclient==2.9.0 python-editor==1.0.3 python-glanceclient==2.11.0 python-heatclient==1.15.0 python-json-logger python-keystoneclient==3.16.0 python-mimeparse==1.6.0 python-neutronclient==6.8.0 python-novaclient==9.1.1 python-openstackclient==3.15.0 python-swiftclient==3.5.0 s3fs scikit-learn seaborn tenacity tensorboard==1.7.0 tensorflow-tensorboard==1.5.1 tensorflow==1.7.0 termcolor theano watchtower xarray yolk3k
 # pip install -U pycuda pyopencl only if has GPU
 
 # make sure python2 has numpy

@@ -1,7 +1,7 @@
-import asyncio, uuid, distributed, logging
+import asyncio, uuid, distributed, logging, time
 import fn
 
-from .openstack import Instance, FloatingIP, retry_openstack
+from .ostack import create_server, close_server, create_ip
 from .future import AsyncThread, failed, result, block
 from .script import scheduler_script, worker_script
 
@@ -10,39 +10,40 @@ log = logging.getLogger(__name__)
 ################################################################################
 
 class JetStreamCluster(fn.ClosingContext):
-    async def _scheduler(self, flavor, volume):
-        host = str(await self.scheduler[0])
-        script = scheduler_script(host, self.scheduler[1], volume, python=self.python, preload=self.preload)
+    async def _scheduler(self, ip, port, flavor, volume):
+        script = scheduler_script(ip, port, volume, python=self.python, preload=self.preload)
+        print(script)
         log.debug(fn.message('Submitting scheduler script', contents=script))
-        return await Instance.create(self.name, image=self.image, flavor=flavor, ip=self.scheduler[0], userdata=script)
+        return await create_server(self.conn, name=self.name, network=self.network,
+            image=self.image, flavor=flavor, ip=ip, user_data=script)
 
-    def __init__(self, name, flavor, image, port=8786, *, preload=None, python=None, volume=None):
+    def __init__(self, conn, name, flavor, image, network, port=8786, *, preload=None, python=None, volume=None):
         self.name = str(uuid.uuid4()) if name is None else name
         self.python = python
+        self.conn = conn
         self.runner = AsyncThread()
         self.image = image
-        self.scheduler = (self.runner.execute(retry_openstack(FloatingIP.create), 'public'), port)
+        self.network = network
         self.preload = preload
-        self.instances = [self.runner.put(self._scheduler(flavor, volume))]
+        ip = create_ip(conn)
+        self.instances = [(ip, port, self.runner.put(self._scheduler(ip, port, flavor, volume)))]
 
     async def _close(self, instance):
-        inst = await instance
-        await self.runner.execute(retry_openstack(inst.close))
+        await self.runner.execute(close_server(self.conn, await instance[2]))
+        self.conn.delete_floating_ip(instance[0])
 
     def close(self, *, instances=None):
         '''Stop a set of workers which defaults to all workers'''
         instances = self.instances if instances is None else instances
         return [self.runner.put(self._close(i)) for i in self.instances]
 
-    async def _worker(self, name, image, flavor, port=8785, preload=None):
-        scheduler = await self.scheduler[0], self.scheduler[1]
-        host = self.runner.execute(retry_openstack(FloatingIP.create), 'public')
-        ip = await host
-        script = worker_script((ip, port), scheduler=scheduler, python=self.python, preload=preload)
+    async def _worker(self, name, ip, script, *, image, flavor):
         log.debug(fn.message('Submitting worker script', contents=script))
-        return await Instance.create(name, image=image, flavor=flavor, ip=host, userdata=script)
+        await self.instances[0][2]
+        return await create_server(self.conn, name=name, image=image,
+            flavor=flavor, ip=ip, network=self.network, user_data=script)
 
-    def add_worker(self, flavor, image=None, preload=None):
+    def add_worker(self, flavor, image=None, port=8785, preload=None):
         '''
         wait for instance.status() to be active
         and wait for instance.ip()
@@ -52,16 +53,23 @@ class JetStreamCluster(fn.ClosingContext):
         '''
         name = '{}-{}'.format(self.name, len(self.instances))
         image = self.image if image is None else image
-        self.instances.append(self.runner.put(self._worker(name, image, flavor, preload=preload)))
+        ip = create_ip(self.conn)
+        assert not any(ip == i[0] for i in self.instances)
+        try:
+            script = worker_script((ip, port), scheduler=self.instances[0][:2], python=self.python, preload=preload)
+            inst = self.runner.put(self._worker(name, ip, script, image=image, flavor=flavor))
+            self.instances.append((ip, port, inst))
+        except Exception:
+            self.conn.delete_floating_ip(ip)
+            raise
 
     @property
     def scheduler_address(self):
-        [addr] = self.runner.wait([self.scheduler[0]], timeout=None)[0]
-        return '%s:%d' % (addr.result(), self.scheduler[1])
+        return '%s:%d' % self.instances[0][:2]
 
     def client(self, attempts=10, **kwargs):
         '''Wait for scheduler to be initialized and return Client(self)'''
-        block(self.workers[0])
+        block(self.instances[0][2])
         for i in reversed(range(attempts)):
             try:
                 return distributed.Client(self, **kwargs)

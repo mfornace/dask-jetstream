@@ -72,7 +72,7 @@ def as_neutron(neutron=None):
 
 EXCEPTIONS = [BadRequest, ConnectionRefusedError, RetriableConnectionFailure, Conflict]
 
-def retry_openstack(function, timeout=500, exceptions=None):
+def retry_openstack(function, timeout=3600, exceptions=None):
     '''Reattempt OpenStack calls that give given exception types'''
     exc = tuple(EXCEPTIONS if exceptions is None else exceptions)
     @fn.wraps(function)
@@ -82,8 +82,9 @@ def retry_openstack(function, timeout=500, exceptions=None):
             try:
                 return function(*args, **kwargs)
             except exc as e:
+                log.info(fn.message(str(e)))
                 if time.time() > start + timeout: raise e
-            time.sleep(1.5 ** (i-2))
+            time.sleep(2 ** (i/2-1))
     return retryable
 
 ################################################################################
@@ -217,6 +218,7 @@ class Instance(OS, fn.ClosingContext):
         '''
         nics = [{'net-id': Network(net).id}]
         log.info(fn.message('Creating OpenStack instance', image=str(image), flavor=str(flavor)))
+
         os = await async_exe(pool, as_nova(nova).servers.create, name=name, image=Image(image).os,
             flavor=Flavor(flavor).os, key_name=key, nics=nics, security_groups=groups, userdata=userdata)
         out = Instance(os)
