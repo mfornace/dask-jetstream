@@ -29,7 +29,7 @@ class JetStreamCluster(fn.ClosingContext):
         self.instances = [(ip, port, self.runner.put(self._scheduler(ip, port, flavor, volume)))]
 
     async def _close(self, instance):
-        await self.runner.execute(close_server(self.conn, await instance[2]))
+        await self.runner.execute(close_server, self.conn, await instance[2])
         self.conn.delete_floating_ip(instance[0])
 
     def close(self, *, instances=None):

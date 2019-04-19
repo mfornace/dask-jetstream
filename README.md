@@ -58,7 +58,8 @@ openstack security group rule create mfornace-global-ssh --protocol tcp --dst-po
 ```
 
 ## Image creation from Ubuntu 16
-Reboot instance first. We should redo the pip installs to be conda sometime.
+Reboot instance first. We should redo the packages to be in a conda environment sometime.
+
 ```bash
 sudo apt update
 sudo dpkg --configure -a
@@ -76,8 +77,8 @@ sudo /usr/anaconda/bin/conda install -c omnia openmm && \
 sudo /usr/anaconda/bin/conda install -c anaconda netcdf4 && \
 sudo /usr/anaconda/bin/conda install pytorch torchvision -c pytorch && \
 sudo /usr/anaconda/bin/conda upgrade --all && \
-sudo /usr/anaconda/bin/pip install -U pip && \
-sudo /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient python-dateutil python-designateclient python-editor python-glanceclient python-heatclient python-json-logger python-keystoneclient python-mimeparse python-neutronclient python-novaclient python-openstackclient python-swiftclient s3fs scikit-learn seaborn tenacity tensorboard tensorflow-tensorboard tensorflow termcolor theano watchtower xarray yolk3k protobuf keystoneauth1
+sudo -H /usr/anaconda/bin/pip install -U pip && \
+sudo -H /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras mdtraj more_itertools nbdime neutron paramiko parmed psutil python-cinderclient python-dateutil python-designateclient python-editor python-glanceclient python-heatclient python-json-logger python-keystoneclient python-mimeparse python-neutronclient python-novaclient python-openstackclient python-swiftclient s3fs scikit-learn seaborn tenacity tensorboard tensorflow-tensorboard tensorflow termcolor theano watchtower xarray yolk3k protobuf keystoneauth1
 # sudo /usr/anaconda/bin/pip install -U asyncssh autograd awscli bokeh boto3 cloudpickle dask distributed Flask gitpython Gpy ipyparallel joblib keras more_itertools nbdime neutron paramiko parmed psutil python-cinderclient==3.5.0 python-dateutil==2.7.2 python-designateclient==2.9.0 python-editor==1.0.3 python-glanceclient==2.11.0 python-heatclient==1.15.0 python-json-logger python-keystoneclient==3.16.0 python-mimeparse==1.6.0 python-neutronclient==6.8.0 python-novaclient==9.1.1 python-openstackclient==3.15.0 python-swiftclient==3.5.0 s3fs scikit-learn seaborn tenacity tensorboard==1.7.0 tensorflow-tensorboard==1.5.1 tensorflow==1.7.0 termcolor theano watchtower xarray yolk3k
 # pip install -U pycuda pyopencl only if has GPU
 
@@ -88,7 +89,18 @@ bash install_ambertools.sh -v 3 --prefix /usr --non-conda
 # download https://www.rosettacommons.org/download.php?token=a64t4Q78m&file=rosetta_bin_linux_3.9_bundle.tgz and extract on own computer
 # scp it to the instance host as rosetta
 mv rosetta /usr/rosetta
+
+wget ftp://ftp.gromacs.org/pub/gromacs/gromacs-2019.2.tar.gz && tar xfz gromacs-2019.2.tar.gz
+cd gromacs-2019.2 && mkdir build && cd build
+cmake .. -DGMX_BUILD_OWN_FFTW=ON -DREGRESSIONTEST_DOWNLOAD=ON -DCMAKE_INSTALL_PREFIX=/usr && make -j 4
+make check
+sudo make install
+
+scp -r /usr/local/Cellar/gromacs/2019.1/share/gromacs/top ubuntu@149.165.171.192:~/
+sudo mv top/ /usr/share/gromacs/
 ```
+
+GROMACS says it needs `source /usr/bin/GMXRC` but `gmx pdb2gmx -f solvated.pdb` worked without any help for me after installation. (Had DESRES and OPC included properly).
 
 Then on the instance:
 ```python
