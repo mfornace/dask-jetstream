@@ -12,7 +12,6 @@ log = logging.getLogger(__name__)
 class JetStreamCluster(fn.ClosingContext):
     async def _scheduler(self, ip, port, flavor, volume):
         script = scheduler_script(ip, port, volume, python=self.python, preload=self.preload)
-        print(script)
         log.debug(fn.message('Submitting scheduler script', contents=script))
         return await create_server(self.conn, name=self.name, network=self.network,
             image=self.image, flavor=flavor, ip=ip, user_data=script)

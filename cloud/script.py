@@ -36,7 +36,6 @@ async def mount_volume(conn, volume_id, mount='/mnt/volume', user='$USER'):
         'sudo chown -R {u} {v}',
         'sudo chmod -R g+rw {v}'
     )).format(d=dev, v=mount, u=user)
-    print(cmd)
     await conn.run(cmd, check=True)
     return dev
 
