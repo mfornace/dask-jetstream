@@ -164,7 +164,9 @@ def submit_server(conn, name, image, flavor, network, security_groups=None, user
 
 def close_server(conn, server, graceful=True):
     if graceful:
-        conn.compute.stop_server(conn.compute.find_server(server.id))
+        s = conn.compute.find_server(server.id)
+        if s.vm_state != 'stopped':
+            conn.compute.stop_server(s)
     s = conn.get_server(server.id)
     if s is None:
         return False
