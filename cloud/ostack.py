@@ -163,11 +163,17 @@ def submit_server(conn, name, image, flavor, network, security_groups=None, user
         networks=[{"uuid": net}], key_name=key_name, nics=nics)
 
 def close_server(conn, server, graceful=True):
+    '''
+    Close a single instance
+    - `conn`: the OpenStack connection
+    - `server`: the server or server id
+    '''
+    server = getattr(server, 'id', server)
     if graceful:
-        s = conn.compute.find_server(server.id)
+        s = conn.compute.find_server(server)
         if s.status != 'SHUTOFF':
             conn.compute.stop_server(s)
-    s = conn.get_server(server.id)
+    s = conn.get_server(server)
     if s is None:
         return False
     try:
