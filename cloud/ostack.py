@@ -9,7 +9,7 @@ connection.compute.stop_server(server)
 connection.compute.start_server(server)
 connection.compute.suspend_server(server)
 """
-import time, itertools, logging, asyncio, base64
+import time, itertools, logging, base64
 from concurrent.futures import ThreadPoolExecutor
 
 from keystoneauth1.exceptions import RetriableConnectionFailure
@@ -74,11 +74,11 @@ def close_openstack(conn, graceful=True):
 
 EXCEPTIONS = [ConnectionRefusedError, RetriableConnectionFailure, openstack.exceptions.ResourceTimeout]
 
-def async_retry(function, timeout=3600, exceptions=None):
+def retry(function, timeout=3600, exceptions=None):
     '''Reattempt OpenStack calls that give given exception types'''
     exc = tuple(EXCEPTIONS if exceptions is None else exceptions)
     @fn.wraps(function)
-    async def retryable(*args, **kwargs):
+    def retryable(*args, **kwargs):
         start = time.time()
         for i in itertools.count():
             try:
@@ -87,7 +87,7 @@ def async_retry(function, timeout=3600, exceptions=None):
                 log.info(fn.message(str(e)))
                 if time.time() > start + timeout:
                     raise
-            await asyncio.sleep(2 ** (i/2-1))
+            time.sleep(2 ** (i/2-1))
     return retryable
 
 ################################################################################
@@ -138,10 +138,10 @@ def get_server_ip(conn, server):
 def create_ip(conn):
     return conn.create_floating_ip().floating_ip_address
 
-async def attach_ip(conn, server, ip: str):
-    '''Asynchronously attach an IP to a server'''
+def attach_ip(conn, server, ip: str):
+    '''Attach an IP to a server'''
     _ = conn.add_ips_to_server(conn.get_server(server.id), ips=[ip])
-    await async_retry(lambda i: conn.get_server_public_ip(conn.get_server(i)))(server.id)
+    retry(lambda i: conn.get_server_public_ip(conn.get_server(i)))(server.id)
 
 def get_server(conn, name_or_id):
     return conn.compute.get_server(name_or_id)
@@ -171,7 +171,7 @@ def close_server(conn, server, graceful=True):
     server = getattr(server, 'id', server)
     if graceful:
         s = conn.compute.find_server(server)
-        if s.status != 'SHUTOFF':
+        if s is not None and s.status != 'SHUTOFF':
             conn.compute.stop_server(s)
     s = conn.get_server(server)
     if s is None:
@@ -184,14 +184,14 @@ def close_server(conn, server, graceful=True):
 
 ################################################################################
 
-async def create_server(conn, *, name, image, flavor, network, ip=None, security_groups=None, user_data=None, key_name=None, nics=None):
-    '''Asynchronously create a server. If an IP is given, attach it to the server'''
+def create_server(conn, *, name, image, flavor, network, ip=None, security_groups=None, user_data=None, key_name=None, nics=None):
+    '''Create a server. If an IP is given, attach it to the server'''
     server = submit_server(conn, name=name, image=image, flavor=flavor, network=network,
         security_groups=security_groups, user_data=user_data, key_name=key_name, nics=nics)
     try:
-        s = await async_retry(conn.compute.wait_for_server)(server, wait=0.01)
+        s = retry(conn.compute.wait_for_server)(server, wait=0.01)
         if ip is not None:
-            await attach_ip(conn, server, ip)
+            attach_ip(conn, server, ip)
         return s
     except Exception:
         try:

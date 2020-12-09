@@ -2,6 +2,7 @@ import os as _os, inspect as _in, sys as _sys
 
 from .ostack import *
 from .cluster import *
+from .k8s import *
 from .script import *
 from .cloudwatch import *
 
