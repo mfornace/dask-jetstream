@@ -59,9 +59,10 @@ class K8sCluster:
             pass
         return ip
 
-    def stop_worker(self, name):
-        '''Stop a single worker'''
-        self._close(next(w for w in self.workers if w.name == name))
+    def stop_workers(self, names):
+        '''Stop workers given a list of their names'''
+        tasks = [self.pool.submit(self._close, w) for w in self.workers if w.name in names]
+        return [t.result() for t in tasks]
 
     def close(self):
         '''Stop all workers and the head nodes'''
