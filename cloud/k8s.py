@@ -59,12 +59,12 @@ class K8sCluster:
             pass
         return ip
 
-    def close_node(self, node):
-        server = self.conn.find_server(node)
-        self._close(server)
+    def stop_worker(self, name):
+        '''Stop a single worker'''
+        self._close(next(w for w in self.workers if w.name == name))
 
     def close(self):
-        '''Stop a set of workers which defaults to all workers'''
+        '''Stop all workers and the head nodes'''
         self.instances = [self.front, self.scheduler] + self.workers
         return [self.pool.submit(self._close, i) for i in instances]
 
@@ -84,28 +84,24 @@ class K8sCluster:
             raise
 
     def add_worker(self, *, flavor, script, image=None):
-        '''
-        wait for instance.status() to be active
-        and wait for instance.ip()
-        dask-worker {SCHEDULERIP}:8786 --nthreads 0 --nprocs 1
-            --listen-address tcp://{WORKERETH}:8001
-            --contact-address tcp://{WORKERIP}:8001
-        '''
+        '''Add a single worker (asynchronous)'''
         image = self.image if image is None else image
         return self.pool.submit(self._worker, script, image=image, flavor=flavor)
 
     def scale_up(self, n, *, flavor, script, image=None):
+        '''Add workers to get up to n total workers'''
         tasks = [self.add_worker(flavor=flavor, script=script, image=image) for _ in range(len(self.workers), n)]
         return [t.result() for t in tasks]
 
     def refresh(self):
+        '''Refresh fetched data -- probably better to just remake cluster though'''
         servers = {v.id : v for v in self.conn.list_servers()}
         for w in self.workers:
             w.update(servers.get(w.id, {}))
 
-    def scale_down(self, n):
-        workers = self.workers[n:]
-        tasks = [self.pool.submit(self._close, i) for i in workers]
+    def stop_all_workers(self):
+        '''Remove all workers'''
+        tasks = [self.pool.submit(self._close, i) for i in self.workers]
         return [t.result() for t in tasks]
 
     def __str__(self):
