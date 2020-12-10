@@ -1,4 +1,4 @@
-import uuid, logging, time, shortuuid
+import uuid, logging, time
 from concurrent.futures import ThreadPoolExecutor
 import fn
 
