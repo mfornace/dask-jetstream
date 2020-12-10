@@ -46,7 +46,7 @@ class K8sCluster:
 
         self.front = next(s for s in servers if s.name == self.name + '-front')
         self.scheduler = next(s for s in servers if s.name == self.name + '-scheduler')
-        self.workers = [s for s in servers if s.name == self.name + '-worker']
+        self.workers = [s for s in servers if (self.name + '-worker') in s.name]
 
     def _close(self, instance):
         ip = instance.interface_ip
@@ -58,6 +58,10 @@ class K8sCluster:
         except StopIteration:
             pass
         return ip
+
+    def close_node(self, node):
+        server = self.conn.find_server(node)
+        self._close(server)
 
     def close(self):
         '''Stop a set of workers which defaults to all workers'''

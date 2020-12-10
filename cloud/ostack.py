@@ -105,7 +105,7 @@ def retry(function, timeout=3600, exceptions=None):
 
 def get_flavor(conn, flavor):
     if isinstance(flavor, str):
-        assert flavor in FLAVORS
+        assert flavor in FLAVORS, (flavor, FLAVORS)
     out = conn.compute.find_flavor(flavor)
     assert out is not None
     return out
@@ -140,7 +140,9 @@ def create_ip(conn):
 
 def attach_ip(conn, server, ip: str):
     '''Attach an IP to a server'''
-    _ = conn.add_ips_to_server(conn.get_server(server.id), ips=[ip])
+    server = conn.get_server(server.id)
+    assert server is not None
+    _ = conn.add_ips_to_server(server, ips=[ip])
     retry(lambda i: conn.get_server_public_ip(conn.get_server(i)))(server.id)
 
 def get_server(conn, name_or_id):
