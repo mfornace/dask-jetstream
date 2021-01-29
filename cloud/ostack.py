@@ -140,8 +140,11 @@ def create_ip(conn):
 
 def attach_ip(conn, server, ip: str):
     '''Attach an IP to a server'''
-    server = conn.get_server(server.id)
-    assert server is not None
+    def fetch():
+        s = conn.get_server(server.id)
+        assert s is not None
+        return s
+    server = retry(fetch, exceptions=(AssertionError,))()
     _ = conn.add_ips_to_server(server, ips=[ip])
     retry(lambda i: conn.get_server_public_ip(conn.get_server(i)))(server.id)
 
