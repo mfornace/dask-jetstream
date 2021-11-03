@@ -7,7 +7,7 @@ from .ostack import create_server, close_server, create_ip
 log = logging.getLogger(__name__)
 
 FRONT_CMD = '''#!/usr/bin/env bash
-docker run -d --restart=unless-stopped --privileged  -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher:latest
+docker run -d --restart=unless-stopped --privileged  -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher:{}
 '''
 
 ################################################################################
@@ -47,7 +47,7 @@ class K8sCluster:
     def all_active_servers(self):
         return [K8sInstance(s, c) for c in self.connections for s in c.list_servers() if s.status == 'ACTIVE']
 
-    def __init__(self, connections, name, flavor, image, network, *, threads=16, launch=False):
+    def __init__(self, connections, name, flavor, image, network, *, threads=16, rancher_tag='stable', launch=False):
         self.name = str(uuid.uuid4()) if name is None else name
         self.connections = list(connections)
         self.pool = ThreadPoolExecutor(threads)
@@ -64,7 +64,7 @@ class K8sCluster:
             log.info('starting front-end at {}'.format(ip))
             self.front = create_server(self.connections[0], name=self.name+'-front',
                 network=self.network, image=self.image, flavor=flavor,
-                ip=ip, user_data=FRONT_CMD)
+                ip=ip, user_data=FRONT_CMD.format(rancher_tag))
 
             cmd = input(('Wait for the IP {} to appear in the browser. Then set up the '
                          'cluster and input the docker run command here with the etcd '
