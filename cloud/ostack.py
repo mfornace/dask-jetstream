@@ -28,6 +28,7 @@ DEFAULT_OS_GROUPS = []
 DEFAULT_CONNECTION = None
 
 def connection(conn=None):
+    '''Return the default connection or else the given connection'''
     global DEFAULT_CONNECTION
     if conn is None:
         if DEFAULT_CONNECTION is None:
@@ -35,7 +36,7 @@ def connection(conn=None):
         return DEFAULT_CONNECTION
     if isinstance(conn, openstack.connection.Connection):
         return conn
-    assert False
+    raise TypeError('Expected None or Connection object')
 
 def set_config(dict_like):
     VOLUMES.update(dict_like['volumes'])
