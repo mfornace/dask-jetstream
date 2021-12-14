@@ -48,6 +48,13 @@ class K8sCluster:
         self.scheduler = next(s for s in servers if s.name == self.name + '-scheduler')
         self.workers = [s for s in servers if (self.name + '-worker') in s.name]
 
+    def remake_scheduler():
+            ip = create_ip(conn)
+            log.info('starting scheduler at {}'.format(ip))
+            self.scheduler = create_server(self.conn, name=self.name+'-scheduler',
+                network=self.network, image=self.image, flavor=flavor,
+                ip=ip, user_data='#!/bin/bash\n' + cmd.strip())
+
     def _close(self, instance):
         ip = instance.interface_ip
         close_server(self.conn, instance)
