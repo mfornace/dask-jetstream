@@ -28,6 +28,12 @@ class K8sInstance(typing.NamedTuple):
     def interface_ip(self):
         return self.server.interface_ip
 
+    @property
+    def private_ip(self):
+        addrs = tuple(cluster.front.server.addresses.values())
+        assert len(addrs) == 1, 'more than one network registered to this server'
+        return next(c['addr'] for c in addrs[0] if c['OS-EXT-IPS:type'] == 'fixed')
+
     def close(self):
         ip = self.interface_ip
         close_server(self.connection, self.server)

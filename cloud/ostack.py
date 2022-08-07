@@ -105,8 +105,8 @@ def retry(function, timeout=3600, exceptions=None):
 ################################################################################
 
 def get_flavor(conn, flavor):
-    if isinstance(flavor, str):
-        assert flavor in FLAVORS, (flavor, FLAVORS)
+    # if isinstance(flavor, str):
+    #     assert flavor in FLAVORS, (flavor, FLAVORS)
     out = conn.compute.find_flavor(flavor)
     assert out is not None
     return out
@@ -162,11 +162,17 @@ def submit_server(conn, name, image, flavor, network, security_groups=None, user
         key_name = DEFAULT_OS_KEY
     if user_data is not None:
         user_data = base64.b64encode(user_data.encode()).decode()
-    return conn.compute.create_server(
+    kwargs = dict(
         name=name, image_id=get_image(conn, image).id,
         flavor_id=get_flavor(conn, flavor).id,
         security_groups=security_groups, user_data=user_data,
         networks=[{"uuid": net}], key_name=key_name, nics=nics)
+    try:
+        log.info('Creating server with keywords %r' % kwargs)
+        return conn.compute.create_server(**kwargs)
+    except Exception:
+        log.error('Failed to create server with keywords %r' % kwargs)
+        raise
 
 def close_server(conn, server, graceful=True):
     '''
@@ -180,13 +186,16 @@ def close_server(conn, server, graceful=True):
         if s is not None and s.status != 'SHUTOFF':
             conn.compute.stop_server(s)
     s = conn.get_server(server)
+    print('deleting', s)
     if s is None:
         return False
-    try:
-        return conn.delete_server(s, delete_ips=True)
-    except openstack.exceptions.SDKException as e:
-        log.warning(fn.message(str(e)))
-        return conn.delete_server(s, delete_ips=False)
+    # try:
+    #     print('deleting with ips', s)
+    #     return conn.delete_server(s, delete_ips=True)
+    # except openstack.exceptions.SDKException as e:
+    #     print('deleting without ips', s)
+    #     log.warning(fn.message(str(e)))
+    return conn.delete_server(s, delete_ips=False)
 
 ################################################################################
 
