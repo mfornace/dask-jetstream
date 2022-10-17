@@ -6,9 +6,17 @@ from .ostack import create_server, close_server, create_ip
 
 log = logging.getLogger(__name__)
 
-FRONT_CMD = '''#!/usr/bin/env bash
-docker run -d --restart=unless-stopped --privileged  -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher:{}
+CONFIGURE = r'''#!/usr/bin/env bash
+sudo python3 -c "import json
+with open(\"/etc/docker/daemon.json\", \"r\") as f:
+    x = json.load(f)
+x.update({\"live-restore\": True, \"storage-driver\": \"overlay2\", \"log-opts\": { \"max-size\": \"10m\" }})
+with open(\"/etc/docker/daemon.json\", \"w\") as f:
+    json.dump(x, f, indent=4)"
+systemctl restart docker
 '''
+
+FRONT_CMD = CONFIGURE + 'docker run -d --restart=unless-stopped --privileged  -p 80:80 -p 443:443 -v /opt/rancher:/var/lib/rancher rancher/rancher:'
 
 ################################################################################
 
@@ -53,7 +61,7 @@ class K8sCluster:
     def all_active_servers(self):
         return [K8sInstance(s, c) for c in self.connections for s in c.list_servers() if s.status == 'ACTIVE']
 
-    def __init__(self, connections, name, flavor, image, network, *, threads=16, rancher_tag='stable', launch=False):
+    def __init__(self, connections, name, flavor, image, network, *, threads=16, rancher_tag='stable', launch=False, user_data=None):
         self.name = str(uuid.uuid4()) if name is None else name
         self.connections = list(connections)
         self.pool = ThreadPoolExecutor(threads)
@@ -70,7 +78,7 @@ class K8sCluster:
             log.info('starting front-end at {}'.format(ip))
             self.front = create_server(self.connections[0], name=self.name+'-front',
                 network=self.network, image=self.image, flavor=flavor,
-                ip=ip, user_data=FRONT_CMD.format(rancher_tag))
+                ip=ip, user_data=user_data or (FRONT_CMD + rancher_tag))
 
             cmd = input(('Wait for the IP {} to appear in the browser. Then set up the '
                          'cluster and input the docker run command here with the etcd '
@@ -80,7 +88,7 @@ class K8sCluster:
             log.info('starting scheduler at {}'.format(ip))
             self.scheduler = create_server(self.connections[0], name=self.name+'-scheduler',
                 network=self.network, image=self.image, flavor=flavor,
-                ip=ip, user_data='#!/bin/bash\n' + cmd.strip())
+                ip=ip, user_data=CONFIGURE + cmd.strip())
 
             servers = self.all_active_servers()
 
@@ -120,7 +128,7 @@ class K8sCluster:
         try:
             log.info('creating worker at {}'.format(ip))
             server = create_server(conn, name=self.name + '-worker-' + ip.replace('.', '-'),
-                image=image, flavor=flavor, ip=ip, network=self.network, user_data=script)
+                image=image, flavor=flavor, ip=ip, network=self.network, user_data=CONFIGURE + script)
             server.interface_ip  = ip
             self.workers.append(server)
             return ip

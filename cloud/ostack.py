@@ -21,8 +21,6 @@ log = logging.getLogger(__name__)
 
 ################################################################################
 
-FLAVORS, VOLUMES, NETWORKS, IMAGES = set(), {}, {}, {}
-
 DEFAULT_OS_KEY = ''
 DEFAULT_OS_GROUPS = []
 DEFAULT_CONNECTION = None
@@ -37,12 +35,6 @@ def connection(conn=None):
     if isinstance(conn, openstack.connection.Connection):
         return conn
     raise TypeError('Expected None or Connection object')
-
-def set_config(dict_like):
-    VOLUMES.update(dict_like['volumes'])
-    NETWORKS.update(dict_like['networks'])
-    FLAVORS.update(dict_like['flavors'])
-    IMAGES.update(dict_like['images'])
 
 def lookup(where, key):
     '''Disambiguates the key repeatedly, if a list takes the last element'''
@@ -60,10 +52,7 @@ def close_openstack(conn, graceful=True):
 
     tasks = []
     with ThreadPoolExecutor(len(ips) + len(servers)) as pool:
-        for i in ips:
-            tasks.append(pool.submit(conn.delete_floating_ip, i))
-        while any(not t.done() for t in tasks):
-            time.sleep(0.2)
+        print(f'deleting {len(servers)} servers')
         for i in servers:
             tasks.append(pool.submit(close_server, conn, i, graceful=graceful))
         while any(not t.done() for t in tasks):
@@ -105,18 +94,14 @@ def retry(function, timeout=3600, exceptions=None):
 ################################################################################
 
 def get_flavor(conn, flavor):
-    # if isinstance(flavor, str):
-    #     assert flavor in FLAVORS, (flavor, FLAVORS)
     out = conn.compute.find_flavor(flavor)
-    assert out is not None
+    assert out is not None, flavor
     return out
 
 ################################################################################
 
 def get_image(conn, image='ubuntu'):
     '''Find an image. Use config defaults'''
-    if isinstance(image, str):
-        image = lookup(IMAGES, image)
     assert image is not None
     out = conn.compute.find_image(image)
     assert out is not None
@@ -126,7 +111,7 @@ def get_image(conn, image='ubuntu'):
 
 def get_network(conn, net):
     assert net is None or isinstance(net, str)
-    out = connection(conn).get_network(NETWORKS.get(net, net))
+    out = connection(conn).get_network(net)
     assert out is not None
     return out
 
@@ -160,12 +145,12 @@ def submit_server(conn, name, image, flavor, network, security_groups=None, user
         security_groups = [dict(name=g) for g in DEFAULT_OS_GROUPS]
     if key_name is None:
         key_name = DEFAULT_OS_KEY
-    if user_data is not None:
+    if user_data:
         user_data = base64.b64encode(user_data.encode()).decode()
     kwargs = dict(
         name=name, image_id=get_image(conn, image).id,
         flavor_id=get_flavor(conn, flavor).id,
-        security_groups=security_groups, user_data=user_data,
+        security_groups=security_groups, user_data=user_data or '',
         networks=[{"uuid": net}], key_name=key_name, nics=nics)
     try:
         log.info('Creating server with keywords %r' % kwargs)
@@ -185,17 +170,14 @@ def close_server(conn, server, graceful=True):
         s = conn.compute.find_server(server)
         if s is not None and s.status != 'SHUTOFF':
             conn.compute.stop_server(s)
-    s = conn.get_server(server)
-    print('deleting', s)
-    if s is None:
-        return False
+    # s = conn.get_server(server)
+    # if s is None:
+    #     return False
     # try:
-    #     print('deleting with ips', s)
     #     return conn.delete_server(s, delete_ips=True)
     # except openstack.exceptions.SDKException as e:
-    #     print('deleting without ips', s)
     #     log.warning(fn.message(str(e)))
-    return conn.delete_server(s, delete_ips=False)
+    return conn.delete_server(server, delete_ips=False)
 
 ################################################################################
 
