@@ -8,7 +8,9 @@ log = logging.getLogger(__name__)
 
 SCRIPT = r'''#!/usr/bin/env bash
 cd /home/ubuntu
-/home/ubuntu/miniconda3/bin/python fks.py --set-dns --sleep 30
+. /etc/profile
+module load intel-OneAPI/2022.3.1
+/home/ubuntu/miniconda3/bin/python fks.py --set-dns --sleep {sleep} --queue {queue} --slots {slots}
 '''
 
 ################################################################################
@@ -48,15 +50,14 @@ class FksCluster:
     def all_active_servers(self):
         return [FksInstance(s, c) for c in self.connections for s in c.list_servers() if s.status == 'ACTIVE']
 
-    def __init__(self, connections, name, image, network, *, threads=16):
+    def __init__(self, connections, name, image, network, *, queue, threads=16):
         self.name = str(uuid.uuid4()) if name is None else name
         self.connections = list(connections)
         self.pool = ThreadPoolExecutor(threads)
         self.image = image
         self.network = network
-
-        servers = self.all_active_servers()
-        self.workers = [s for s in servers if (self.name + '-worker') in s.name]
+        self.queue = queue
+        self.refresh()
 
     def _close(self, instance):
         ip = instance.close()
@@ -97,21 +98,25 @@ class FksCluster:
         image = self.image if image is None else image
         return self.pool.submit(self._worker, conn, script=script, image=image, flavor=flavor)
 
-    def scale_up(self, conn, n, *, flavor, image=None):
+    def scale_up(self, conn, n, *, flavor, image=None, slots, sleep=30):
         '''Add workers to get up to n total workers'''
-        tasks = [self.add_worker(conn, flavor=flavor, script=SCRIPT, image=image) for _ in range(len(self.workers), n)]
-        return [t.result() for t in tasks]
+        script = SCRIPT.format(queue=self.queue, sleep=sleep, slots=slots)
+        tasks = [self.add_worker(conn, flavor=flavor, script=script, image=image) for _ in range(len(self.workers), n)]
+        results = [t.result() for t in tasks]
+        self.refresh()
+        return results
 
     def refresh(self):
         '''Refresh fetched data -- probably better to just remake cluster though'''
-        servers = {v.id : v for c in self.connections for v in c.list_servers()}
-        for w in self.workers:
-            w.server.update(servers.get(w.id, {}))
-
+        servers = self.all_active_servers()
+        self.workers = [s for s in servers if (self.name + '-worker') in s.name]
+        
     def stop_all_workers(self):
         '''Remove all workers'''
         tasks = [self.pool.submit(self._close, i) for i in self.workers]
-        return [t.result() for t in tasks]
+        results = [t.result() for t in tasks]
+        self.refresh()
+        return results
 
     def __str__(self):
         return 'FksCluster(%r, %d workers)' % (self.name, len(self.workers))
